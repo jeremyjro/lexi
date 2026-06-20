@@ -1,0 +1,17 @@
+# Environment variables
+.env
+
+# Swift build artifacts
+.build/
+.swiftpm/
+
+# Xcode
+*.xcodeproj
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Debug logs
+*.log
