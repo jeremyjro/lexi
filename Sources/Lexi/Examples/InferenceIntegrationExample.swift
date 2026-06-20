@@ -1,8 +1,8 @@
 import Foundation
 
-// This file demonstrates how to integrate the new inference backend with the existing CursorAssistant system
+// This file demonstrates how to integrate the new inference backend with the existing Lexi system
 
-class EnhancedCursorAssistant {
+class EnhancedLexi {
     private let inferenceOrchestrator: InferenceOrchestrator
     private let existingContextService: ContextInferenceService
     private let claudeService: ClaudeAIService
@@ -105,7 +105,7 @@ class ScenarioExamples {
     
     // Scenario 1: Go-to-Market persona reading technical content on Twitter
     func scenario1_GTM_Twitter_Technical() async {
-        let assistant = EnhancedCursorAssistant(apiKey: "your-api-key")
+        let assistant = EnhancedLexi(apiKey: "your-api-key")
         
         // Set persona
         let profileManager = UserProfileManager()
@@ -122,7 +122,7 @@ class ScenarioExamples {
     
     // Scenario 2: General user encountering slang in iMessage
     func scenario2_IMessage_Slang() async {
-        let assistant = EnhancedCursorAssistant(apiKey: "your-api-key")
+        let assistant = EnhancedLexi(apiKey: "your-api-key")
         
         // Simulate highlighting slang in Messages
         let explanation = await assistant.handleTextSelection(
@@ -135,7 +135,7 @@ class ScenarioExamples {
     
     // Scenario 3: Technical person in VS Code
     func scenario3_Technical_VSCode() async {
-        let assistant = EnhancedCursorAssistant(apiKey: "your-api-key")
+        let assistant = EnhancedLexi(apiKey: "your-api-key")
         
         // Set technical persona
         let profileManager = UserProfileManager()
@@ -152,7 +152,7 @@ class ScenarioExamples {
     
     // Scenario 4: Student learning new concept
     func scenario4_Student_Browser() async {
-        let assistant = EnhancedCursorAssistant(apiKey: "your-api-key")
+        let assistant = EnhancedLexi(apiKey: "your-api-key")
         
         // Set student persona
         let profileManager = UserProfileManager()
@@ -169,7 +169,7 @@ class ScenarioExamples {
     
     // Scenario 5: Executive reading business document
     func scenario5_Executive_Document() async {
-        let assistant = EnhancedCursorAssistant(apiKey: "your-api-key")
+        let assistant = EnhancedLexi(apiKey: "your-api-key")
         
         // Set executive persona
         let profileManager = UserProfileManager()

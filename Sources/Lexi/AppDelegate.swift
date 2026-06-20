@@ -6,7 +6,7 @@ func loadDotEnv() {
     let possiblePaths = [
         Bundle.main.path(forResource: ".env", ofType: nil),
         FileManager.default.currentDirectoryPath.appending("/.env"),
-        "/Volumes/T7/Projects/Jeremy/CursorAssistant/.env"  // Direct path to project
+        "/Volumes/T7/Projects/Jeremy/Lexi/.env"  // Direct path to project
     ].compactMap { $0 }
     
     var envPath: String?
@@ -337,7 +337,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     term: activeTab.term,
                     context: followUpPrompt,
                     learningStyle: .analogies,
-                    appName: "CursorAssistant",
+                    appName: "Lexi",
                     screenshot: nil,
                     onStreamingChunk: { [weak self] streamingContent in
                         Task { @MainActor in

@@ -44,14 +44,14 @@ Lexi is a native macOS application that provides instant, context-aware explanat
 ### ✅ Project Structure
 
 ```
-CursorAssistant/
+Lexi/
 ├── Package.swift                    # Swift Package Manager configuration
 ├── README.md                        # Comprehensive documentation
 ├── TESTING.md                       # Detailed testing guide
 ├── setup.sh                         # Setup automation script
 ├── .env.example                     # Environment variable template
 ├── .gitignore                       # Git ignore rules
-├── Sources/CursorAssistant/
+├── Sources/Lexi/
 │   ├── main.swift                   # App entry point and coordination
 │   ├── Models/
 │   │   ├── LearningStyle.swift      # Learning style configurations
@@ -116,9 +116,9 @@ CursorAssistant/
 
 ### Quick Start
 ```bash
-cd /Volumes/T7/Projects/Jeremy/CursorAssistant
+cd /Volumes/T7/Projects/Jeremy/Lexi
 export ANTHROPIC_API_KEY="your-key-here"
-swift run CursorAssistant
+swift run Lexi
 ```
 
 ### Usage

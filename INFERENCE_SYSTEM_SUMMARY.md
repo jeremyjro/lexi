@@ -40,7 +40,7 @@ Final Inferred Query with Confidence Score
 ## 📁 File Structure
 
 ```
-Sources/CursorAssistant/
+Sources/Lexi/
 ├── Models/
 │   └── InferenceModels.swift          # All data models and enums
 ├── Services/
@@ -218,7 +218,7 @@ config.updateConfiguration(
 
 ## 🔄 Integration with Existing System
 
-The system integrates seamlessly with the existing CursorAssistant:
+The system integrates seamlessly with the existing Lexi:
 
 1. **Backward Compatible**: Existing `ContextInferenceService` is enhanced
 2. **Gradual Rollout**: Can be enabled/disabled via configuration

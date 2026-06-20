@@ -23,7 +23,7 @@ class CacheService {
     private init() {
         // Set up cache directory
         let cachesDirectory = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        cacheDirectory = cachesDirectory.appendingPathComponent("CursorAssistant")
+        cacheDirectory = cachesDirectory.appendingPathComponent("Lexi")
         
         // Create directory if it doesn't exist
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)

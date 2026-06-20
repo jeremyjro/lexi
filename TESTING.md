@@ -9,13 +9,13 @@
 
 2. **Build the project:**
    ```bash
-   cd /Volumes/T7/Projects/Jeremy/CursorAssistant
+   cd /Volumes/T7/Projects/Jeremy/Lexi
    swift build
    ```
 
 3. **Grant Accessibility Permissions:**
    - Open System Preferences → Privacy & Security → Accessibility
-   - Add CursorAssistant (or Terminal/Swift if running from command line)
+   - Add Lexi (or Terminal/Swift if running from command line)
    - Restart the application
 
 ## Testing Scenarios
@@ -24,7 +24,7 @@
 **Goal:** Verify the core workflow works
 
 **Steps:**
-1. Run the application: `swift run CursorAssistant`
+1. Run the application: `swift run Lexi`
 2. Open any text-based application (Safari, Pages, Notes, etc.)
 3. Hold the Function key
 4. Highlight a word or phrase
@@ -98,7 +98,7 @@ For each application:
 **Goal:** Verify caching improves performance
 
 **Steps:**
-1. Clear cache: Delete `~/Library/Caches/CursorAssistant`
+1. Clear cache: Delete `~/Library/Caches/Lexi`
 2. Test a term (note the response time)
 3. Test the same term again (should be instant)
 4. Check console for "Cache hit" message

@@ -293,7 +293,7 @@ let shouldProcess = orchestrator.shouldProcessInference(
 
 ## Integration with Existing System
 
-To integrate with the existing CursorAssistant system:
+To integrate with the existing Lexi system:
 
 ```swift
 // In your existing ContextInferenceService

@@ -25,8 +25,8 @@ Lexi solves the problem of context-switching when you encounter unfamiliar terms
 ## Architecture
 
 ```
-CursorAssistant/
-├── Sources/CursorAssistant/
+Lexi/
+├── Sources/Lexi/
 │   ├── main.swift              # App entry point and coordination
 │   ├── Models/                 # Data models
 │   │   ├── LearningStyle.swift # Learning preference configurations
@@ -53,7 +53,7 @@ CursorAssistant/
 
 1. Clone the repository:
 ```bash
-cd /Volumes/T7/Projects/Jeremy/CursorAssistant
+cd /Volumes/T7/Projects/Jeremy/Lexi
 ```
 
 2. Set your Anthropic API key:
@@ -68,14 +68,14 @@ swift build
 
 4. Run the application:
 ```bash
-swift run CursorAssistant
+swift run Lexi
 ```
 
 ### Permissions
 
 On first launch, you'll need to grant Accessibility permissions:
 1. Open System Preferences → Privacy & Security → Accessibility
-2. Add CursorAssistant to the list of allowed applications
+2. Add Lexi to the list of allowed applications
 3. Restart the application
 
 ## Usage
