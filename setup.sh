@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Setup script for Cursor Assistant
+# Setup script for Lexi
 
-echo "🚀 Setting up Cursor Assistant..."
+echo "🚀 Setting up Lexi..."
 
 # Check if .env file exists
 if [ ! -f .env ]; then
@@ -29,5 +29,5 @@ echo "✅ Setup complete!"
 echo ""
 echo "Next steps:"
 echo "1. Edit .env and add your ANTHROPIC_API_KEY"
-echo "2. Run: swift run CursorAssistant"
+echo "2. Run: swift run Lexi"
 echo "3. Grant Accessibility permissions when prompted"

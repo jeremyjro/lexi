@@ -1,4 +1,4 @@
-# Testing Guide for Cursor Assistant
+# Testing Guide for Lexi
 
 ## Pre-Testing Setup
 
@@ -151,7 +151,7 @@ For each application:
 
 **Steps:**
 1. Open Activity Monitor
-2. Run Cursor Assistant
+2. Run Lexi
 3. Monitor resource usage over 10 minutes
 4. Perform 20+ lookups
 

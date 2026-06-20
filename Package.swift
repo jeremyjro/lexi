@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "CursorAssistant",
+    name: "Lexi",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .executable(
-            name: "CursorAssistant",
-            targets: ["CursorAssistant"]
+            name: "Lexi",
+            targets: ["Lexi"]
         )
     ],
     dependencies: [
@@ -17,9 +17,9 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "CursorAssistant",
+            name: "Lexi",
             dependencies: [],
-            path: "Sources/CursorAssistant"
+            path: "Sources/Lexi"
         )
     ]
 )

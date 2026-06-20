@@ -80,7 +80,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup global hotkey
         setupGlobalHotkey()
         
-        print("Cursor Assistant started successfully")
+        print("Lexi started successfully")
     }
     
     func setupGlobalHotkey() {

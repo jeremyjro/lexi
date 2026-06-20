@@ -1,10 +1,10 @@
-# Cursor Assistant
+# Lexi
 
 A macOS application that provides instant, context-aware explanations for unfamiliar words and concepts as you read. Simply hold the function key, highlight any text, and get a personalized explanation without breaking your learning flow.
 
 ## Vision
 
-Cursor Assistant solves the problem of context-switching when you encounter unfamiliar terms while reading. Instead of opening a new tab or switching to an AI chatbot, the assistant follows your cursor and provides instant, tailored explanations right where you're reading.
+Lexi solves the problem of context-switching when you encounter unfamiliar terms while reading. Instead of opening a new tab or switching to an AI chatbot, the assistant follows your cursor and provides instant, tailored explanations right where you're reading.
 
 ## Features
 
@@ -80,7 +80,7 @@ On first launch, you'll need to grant Accessibility permissions:
 
 ## Usage
 
-1. Launch Cursor Assistant
+1. Launch Lexi
 2. Hold the **Option+Command** keys on your keyboard
 3. Highlight any word or phrase in any application
 4. Release the Option+Command keys

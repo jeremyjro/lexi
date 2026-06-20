@@ -1,8 +1,8 @@
-# Cursor Assistant - Project Summary
+# Lexi - Project Summary
 
 ## Project Overview
 
-Cursor Assistant is a native macOS application that provides instant, context-aware explanations for unfamiliar words and concepts. It solves the problem of context-switching when reading by following your cursor and providing personalized explanations without breaking your flow state.
+Lexi is a native macOS application that provides instant, context-aware explanations for unfamiliar words and concepts. It solves the problem of context-switching when reading by following your cursor and providing personalized explanations without breaking your flow state.
 
 ## What Has Been Built
 
@@ -122,7 +122,7 @@ swift run CursorAssistant
 ```
 
 ### Usage
-1. Launch Cursor Assistant
+1. Launch Lexi
 2. Hold Function key
 3. Highlight any text in any application
 4. Release Function key
