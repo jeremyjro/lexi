@@ -63,5 +63,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 PLIST
 
 plutil -lint "$CONTENTS_DIR/Info.plist" >/dev/null
+codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
+codesign --verify --deep --strict "$APP_BUNDLE"
 
 echo "Packaged $APP_BUNDLE"
