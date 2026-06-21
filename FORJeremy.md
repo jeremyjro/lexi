@@ -469,3 +469,41 @@ A setting is not just a text field. It is a contract between UI, runtime configu
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 When a prototype starts working, the next bottleneck is usually not capability; it is operability. Make the working path visible, editable, and recoverable from inside the product.
+
+## 2026-06-21 — Phase 15: Reliability and error handling
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 15 made Lexi failures more diagnosable. Instead of every assistant failure collapsing into “couldn’t reach the assistant,” the proxy now classifies common Anthropic and auth failures, and the Mac client maps those codes into clearer user-facing messages.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not add a full observability stack, persistent error reporting, or user-facing debug console. Those can come later. The immediate need was better categorization at the proxy/client boundary.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The Railway proxy now sends structured errors like `assistant_auth_failed`, `assistant_model_unavailable`, `assistant_rate_limited`, and `unauthorized`. `ExplainClient` decodes both JSON HTTP errors and SSE `error` events with optional codes, then maps them to specific messages in the panel.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+The system already uses HTTP JSON for pre-stream failures and SSE for streaming failures, so Phase 15 extended those existing protocols rather than adding a new diagnostics channel.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized actionable messages over perfect detail. The app still avoids exposing raw provider errors or secrets, but it gives enough direction to know whether to check Railway variables, proxy token settings, model availability, or rate limits.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main historical mess was that many different problems looked the same: missing Anthropic key, wrong model, bad token, unavailable proxy, and Accessibility issues. Phase 15 reduces that ambiguity without overbuilding.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+If the proxy adds more providers or models, keep error codes stable. The app should depend on semantic codes, not raw provider message strings.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A good error message is part of the product architecture. The moment Lexi became cloud-backed, failures could happen in more places, so the boundary needed structured language.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+As systems become distributed, reliability starts with naming failure modes. If you cannot name where something broke, every problem feels like the whole system failed.
