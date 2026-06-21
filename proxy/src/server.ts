@@ -40,7 +40,12 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, model });
+  res.json({
+    ok: true,
+    model,
+    anthropicApiKeyConfigured: Boolean(apiKey),
+    proxyTokenConfigured: Boolean(proxyToken),
+  });
 });
 
 app.post('/explain', async (req, res) => {
