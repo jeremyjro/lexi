@@ -4,26 +4,74 @@ struct ExplainErrorResponse: Decodable {
     let error: String
 }
 
+struct ProxyHealth: Decodable {
+    let ok: Bool
+    let model: String
+}
+
 struct ProxyTiming: Decodable {
     let proxyTtftMs: Int?
     let anthropicTtftMs: Int?
 }
 
 final class ExplainClient {
-    private let endpoint = URL(string: "http://127.0.0.1:8787/explain")!
+    private let proxyBaseURL: URL
+    private let proxyToken: String?
+
+    init(configuration: AppConfiguration = .current) {
+        proxyBaseURL = configuration.proxyBaseURL
+        proxyToken = configuration.proxyToken
+    }
+
+    var baseURLDescription: String {
+        proxyBaseURL.absoluteString
+    }
+
+    var hasProxyToken: Bool {
+        proxyToken != nil
+    }
+
+    func health() async throws -> ProxyHealth {
+        var request = URLRequest(url: endpoint("health"))
+        request.httpMethod = "GET"
+        request.timeoutInterval = 3
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw ExplainClientError.invalidResponse
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                throw ExplainClientError.httpStatus(httpResponse.statusCode)
+            }
+            return try JSONDecoder().decode(ProxyHealth.self, from: data)
+        } catch let error as ExplainClientError {
+            throw error
+        } catch {
+            throw ExplainClientError.proxyUnavailable(proxyBaseURL.absoluteString)
+        }
+    }
 
     func explain(
         _ capture: CapturedSelection,
         onDelta: @escaping @MainActor (String, String) -> Void,
         onTiming: @escaping @MainActor (ProxyTiming) -> Void
     ) async throws -> String {
-        var request = URLRequest(url: endpoint)
+        var request = URLRequest(url: endpoint("explain"))
         request.httpMethod = "POST"
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyProxyAuthorization(to: &request)
         request.httpBody = try JSONEncoder().encode(ExplainPayload(capture: capture))
 
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch {
+            throw ExplainClientError.proxyUnavailable(proxyBaseURL.absoluteString)
+        }
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ExplainClientError.invalidResponse
         }
@@ -79,6 +127,15 @@ final class ExplainClient {
         }
 
         return answer.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func endpoint(_ path: String) -> URL {
+        proxyBaseURL.appendingPathComponent(path)
+    }
+
+    private func applyProxyAuthorization(to request: inout URLRequest) {
+        guard let proxyToken else { return }
+        request.setValue("Bearer \(proxyToken)", forHTTPHeaderField: "Authorization")
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from data: String) throws -> T {
@@ -170,6 +227,7 @@ enum ExplainClientError: LocalizedError {
     case invalidResponse
     case httpStatus(Int)
     case proxyError(String)
+    case proxyUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -179,6 +237,8 @@ enum ExplainClientError: LocalizedError {
             return "Lexi proxy returned HTTP \(status)."
         case .proxyError(let message):
             return message
+        case .proxyUnavailable(let url):
+            return "Lexi proxy is not reachable at \(url). Start the local proxy, then try again."
         }
     }
 }

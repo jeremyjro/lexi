@@ -58,6 +58,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         permissionItem.target = self
         menu.addItem(permissionItem)
 
+        let proxyItem = NSMenuItem(title: "Check Proxy Status", action: #selector(checkProxyStatus), keyEquivalent: "")
+        proxyItem.target = self
+        menu.addItem(proxyItem)
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit Lexi", action: #selector(quitLexi), keyEquivalent: "q")
@@ -90,22 +94,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showHotkeyInfo() {
-        let alert = NSAlert()
-        alert.messageText = "Lexi hotkeys"
-        alert.informativeText = "Option + Space is the default lookup hotkey. Option + Command is still available as a fallback during local testing."
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        showAlert(
+            title: "Lexi hotkeys",
+            message: "Option + Space is the default lookup hotkey. Option + Command is still available as a fallback during local testing."
+        )
     }
 
     @objc private func recheckPermission() {
         if AXIsProcessTrusted() {
-            let alert = NSAlert()
-            alert.messageText = "Accessibility permission is enabled"
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
+            showAlert(title: "Accessibility permission is enabled")
         } else {
             requestAccessibilityPermission()
             showPermissionOnboarding()
+        }
+    }
+
+    @objc private func checkProxyStatus() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let health = try await explainClient.health()
+                await MainActor.run {
+                    self.showAlert(
+                        title: health.ok ? "Lexi proxy is online" : "Lexi proxy responded unexpectedly",
+                        message: "URL: \(self.explainClient.baseURLDescription)\nModel: \(health.model)\nAuth token configured: \(self.explainClient.hasProxyToken ? "Yes" : "No")"
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.showAlert(
+                        title: "Lexi proxy is offline",
+                        message: error.localizedDescription
+                    )
+                }
+            }
         }
     }
 
@@ -207,6 +229,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("Option+Command released; running capture")
             handleLookupHotkey()
         }
+    }
+
+    private func showAlert(title: String, message: String? = nil) {
+        let alert = NSAlert()
+        alert.messageText = title
+        if let message {
+            alert.informativeText = message
+        }
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func currentMilliseconds() -> Double {

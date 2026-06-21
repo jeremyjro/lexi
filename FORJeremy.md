@@ -279,3 +279,155 @@ A beginner might think unused files are harmless if they are not referenced. In 
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 A system should make the active path obvious. If obsolete pieces are still visible, label or exclude them so people do not route work through the wrong machinery. In code and companies, clarity beats archaeology.
+
+## 2026-06-20 — Phase 10: Physical legacy deletion
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 10 removed the old prototype code from the repository instead of merely excluding it from the build. Phase 8 made the active app ignore the old folders. Phase 10 made the source tree match that reality.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not delete anything outside the exact legacy list from Phase 8. The `Utilities` folder, active Capture/Hotkey/Network/Panel files, permission onboarding, proxy, and app entrypoint were left alone. The deletion was intentionally narrow.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The remaining Swift app source now points clearly at the current Lexi architecture: app delegate, app entrypoint, capture, hotkey, proxy client, panel, and permission onboarding. Because the old folders are gone, `Package.swift` no longer needs exclusion rules.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+`git rm` was used rather than a blind filesystem delete because this is a tracked repository. That records the deletion cleanly in version control and makes review straightforward.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized repository clarity over preserving old experiments in place. The old code remains recoverable through git history, but it no longer distracts from the product code in the current tree.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The only practical issue was shell-session saturation during build/restart commands. After clearing old sessions, the Swift build and proxy type-check both passed cleanly.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+If a feature from the old prototype is needed later, recover it intentionally from git history rather than reintroducing the whole old architecture. Cherry-pick ideas, not systems.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+Deleting code is safe when the dependency path is understood and the build proves the deletion. It is unsafe when done as cleanup theater. The key difference is verification.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Once a new operating model works, remove the old operating model. Keeping two systems around feels safe, but it usually creates confusion and hidden maintenance cost.
+
+## 2026-06-20 — Phase 11: Local macOS app bundle packaging
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 11 turned the SwiftPM executable into a local `.app` bundle. Before this, Lexi was mostly launched with `swift run`, which is fine for development but not how a Mac utility should normally be opened. The packaging script now builds Lexi and assembles `dist/Lexi.app`.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not jump straight to signing, notarization, installer creation, or App Store-style distribution. Those steps matter later, but the first packaging milestone is simply a valid local app bundle with the executable and `Info.plist` in the right places.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The script builds the SwiftPM release executable, creates the macOS bundle structure, copies the executable into `Contents/MacOS/Lexi`, and writes `Contents/Info.plist`. The plist includes `LSUIElement` so Lexi remains a menu-bar utility instead of becoming a Dock-first app.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+A shell script is the right tool for this phase because the project is still a SwiftPM app, not an Xcode archive workflow. `plutil` validates the generated plist. The app bundle follows the standard macOS layout: `.app/Contents/MacOS`, `.app/Contents/Resources`, and `.app/Contents/Info.plist`.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized repeatable local packaging over distribution polish. The app is not signed or notarized yet. It is good enough for local testing as a real `.app`, but not yet ready for frictionless installation on other Macs.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+After launching the packaged app, an older debug Lexi process was still running. That could cause duplicate hotkey behavior, so it was stopped. This is a useful reminder that packaging tests should check process state, not just whether `open` returns successfully.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The packaged app may appear as a new app identity for Accessibility permission because macOS permissions are tied to the executable/bundle identity and path. If capture fails in the packaged app, re-enable Accessibility permission for the packaged Lexi app.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A `.app` is not just a renamed executable. It needs the expected bundle layout and metadata. The `Info.plist` is part of runtime behavior: `LSUIElement` affects Dock/menu-bar behavior, and bundle IDs affect permissions and future signing.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Packaging is where a working prototype starts becoming an artifact. A product is not only what runs on your machine; it is also the repeatable process that creates the thing users can launch.
+
+## 2026-06-20 — Phase 12: Proxy configuration and status UX
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 12 made the app more resilient around the backend boundary. Until now, Lexi assumed the proxy lived at `http://127.0.0.1:8787`. That still remains the default, but the app can now resolve a custom proxy URL and expose proxy status from the menu bar.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not build a full settings window yet. A settings UI is useful later, but the lightweight step was a central configuration object plus a status menu item. That gives us better behavior without adding another window/screen.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+`AppConfiguration` owns proxy URL resolution. `ExplainClient` uses that base URL for both `/explain` and `/health`. `AppDelegate` adds a `Check Proxy Status` menu item that calls `ExplainClient.health()` and shows the model/URL or a clear offline error.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+`UserDefaults` and environment variables are simple enough for this phase. The app checks `LexiProxyBaseURL` first, then `LEXI_PROXY_BASE_URL`, then falls back to localhost. That gives local flexibility without committing a hardcoded production URL.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized debuggability over a polished settings UI. You can now tell whether the proxy is online from the menu bar, but editing the proxy URL is still a developer-style configuration path.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The recurring mess is shell-session saturation in this environment during build/restart cycles. The product change itself was straightforward: centralize URL resolution, add health check, improve connection error messaging.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+A hosted proxy will need auth and abuse protection. Configuring a URL is only the first half. The moment the proxy is public, it must identify legitimate clients and protect the Anthropic key.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might treat “backend URL” as a constant. A product engineer treats it as an environment boundary. Local, staging, and production should be swappable without rewriting the app.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Every useful system has boundaries. Make those boundaries observable. If one side is down, the user should know which side failed and what to do next.
+
+## 2026-06-20 — Phase 13: Railway hosted-backend readiness
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 13 prepared the proxy for Railway hosting. The local proxy already worked, but hosted deployment has different requirements: compile TypeScript to JavaScript, bind to the platform host/port, provide health checks, and avoid exposing the Anthropic key to the Mac app.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not complete the live Railway deploy because the Railway CLI is not authenticated on this machine. That is the right stopping point: deployment requires account access. Instead, the repo is now ready to deploy once `railway login` and `railway link` are complete.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The proxy now builds to `proxy/dist` and starts with `node dist/server.js`. `railway.json` tells Railway how to build and start the service. The server binds to `0.0.0.0` when Railway environment variables are present, while preserving `127.0.0.1` local behavior.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+Railway uses project configuration plus environment variables. The proxy now supports `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `PORT`, `HOST`, and optional `LEXI_PROXY_TOKEN`. A helper script verifies Railway auth/link state before deploying.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized safe hosted readiness over forcing a deploy. The proxy is ready, but it is not yet public because Railway authentication is missing. That avoids accidental deployment into the wrong account/project.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The Railway CLI was installed but returned `Unauthorized. Please login with railway login`. That is not a code problem; it is an account/auth step. The helper script now detects that condition cleanly.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+If the Railway proxy is public, set `LEXI_PROXY_TOKEN` and configure the Mac app with the same token via `LexiProxyToken` or `LEXI_PROXY_TOKEN`. A public unauthenticated proxy with an Anthropic key behind it can be abused.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A hosted backend is not just “run the same server elsewhere.” It needs startup commands, build output, health checks, host binding, environment variables, and auth boundaries. Those details are the difference between a local service and a deployable service.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Moving from local to hosted means converting assumptions into configuration. Local paths, local ports, and local secrets must become explicit platform settings.

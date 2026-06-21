@@ -9,8 +9,10 @@ dotenv.config();
 dotenv.config({ path: '../.env', override: false });
 
 const port = Number(process.env.PORT ?? 8787);
+const host = process.env.HOST ?? (process.env.RAILWAY_ENVIRONMENT ? '0.0.0.0' : '127.0.0.1');
 const apiKey = process.env.ANTHROPIC_API_KEY;
 const model = process.env.ANTHROPIC_MODEL ?? 'claude-haiku-4-5-20251001';
+const proxyToken = process.env.LEXI_PROXY_TOKEN;
 
 if (!apiKey) {
   console.warn('ANTHROPIC_API_KEY is not set. /explain will return 500 until it is configured.');
@@ -21,6 +23,21 @@ const app = express();
 
 app.use(cors({ origin: false }));
 app.use(express.json({ limit: '32kb' }));
+app.use((req, res, next) => {
+  if (!proxyToken || req.path === '/health') {
+    next();
+    return;
+  }
+
+  const authorization = req.header('authorization') ?? '';
+  const expected = `Bearer ${proxyToken}`;
+  if (authorization !== expected) {
+    res.status(401).json({ error: 'Unauthorized Lexi proxy request.' });
+    return;
+  }
+
+  next();
+});
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, model });
@@ -113,8 +130,8 @@ app.post('/explain', async (req, res) => {
   }
 });
 
-app.listen(port, '127.0.0.1', () => {
-  console.log(`Lexi proxy listening on http://127.0.0.1:${port}`);
+app.listen(port, host, () => {
+  console.log(`Lexi proxy listening on http://${host}:${port}`);
 });
 
 type ParseResult =

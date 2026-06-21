@@ -4,9 +4,11 @@
 # Swift build artifacts
 .build/
 .swiftpm/
+dist/
 
 # Node build artifacts
 node_modules/
+proxy/dist/
 
 # Xcode
 *.xcodeproj

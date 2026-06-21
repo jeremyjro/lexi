@@ -19,15 +19,7 @@ let package = Package(
         .executableTarget(
             name: "Lexi",
             dependencies: [],
-            path: "Sources/Lexi",
-            exclude: [
-                "Configuration",
-                "Examples",
-                "Models",
-                "Services",
-                "Views/BubbleView.swift",
-                "Views/CursorFollowerView.swift"
-            ]
+            path: "Sources/Lexi"
         )
     ]
 )
