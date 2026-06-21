@@ -1,0 +1,13 @@
+{
+  "name": "lexi-railway-root",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm install --prefix proxy && npm run build --prefix proxy",
+    "start": "npm run start --prefix proxy"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
