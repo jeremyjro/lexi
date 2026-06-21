@@ -8,7 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyManager = HotkeyManager()
     private let selectionCapture = SelectionCapture()
     private let rawCapturePanel = RawCapturePanelController()
-    private let explainClient = ExplainClient()
+    private var settingsWindow: SettingsWindowController?
     private var explainTask: Task<Void, Never>?
     private var legacyModifierMonitor: Any?
     private var isEnabled = true
@@ -49,6 +49,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let enableItem = NSMenuItem(title: isEnabled ? "Disable" : "Enable", action: #selector(toggleEnabled), keyEquivalent: "")
         enableItem.target = self
         menu.addItem(enableItem)
+
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
 
         let hotkeyItem = NSMenuItem(title: "Hotkeys…", action: #selector(showHotkeyInfo), keyEquivalent: "")
         hotkeyItem.target = self
@@ -93,6 +97,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func showSettings() {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController()
+        }
+        settingsWindow?.showWindow(nil)
+        settingsWindow?.window?.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func showHotkeyInfo() {
         showAlert(
             title: "Lexi hotkeys",
@@ -113,11 +126,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let health = try await explainClient.health()
+                let client = ExplainClient()
+                let health = try await client.health()
                 await MainActor.run {
+                    let backendKeyStatus = health.anthropicApiKeyConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
+                    let backendTokenStatus = health.proxyTokenConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                     self.showAlert(
                         title: health.ok ? "Lexi proxy is online" : "Lexi proxy responded unexpectedly",
-                        message: "URL: \(self.explainClient.baseURLDescription)\nModel: \(health.model)\nAuth token configured: \(self.explainClient.hasProxyToken ? "Yes" : "No")"
+                        message: "URL: \(client.baseURLDescription)\nModel: \(health.model)\nLocal token configured: \(client.hasProxyToken ? "Yes" : "No")\nBackend key configured: \(backendKeyStatus)\nBackend token configured: \(backendTokenStatus)"
                     )
                 }
             } catch {
@@ -188,7 +204,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             do {
                 let requestStartedAt = currentMilliseconds()
-                let answer = try await explainClient.explain(capture) { [weak self] _, accumulated in
+                let client = ExplainClient()
+                let answer = try await client.explain(capture) { [weak self] _, accumulated in
                     guard let self else { return }
                     if !didLogFirstToken {
                         didLogFirstToken = true

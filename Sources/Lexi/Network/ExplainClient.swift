@@ -7,6 +7,8 @@ struct ExplainErrorResponse: Decodable {
 struct ProxyHealth: Decodable {
     let ok: Bool
     let model: String
+    let anthropicApiKeyConfigured: Bool?
+    let proxyTokenConfigured: Bool?
 }
 
 struct ProxyTiming: Decodable {

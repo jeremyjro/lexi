@@ -431,3 +431,41 @@ A hosted backend is not just “run the same server elsewhere.” It needs start
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 Moving from local to hosted means converting assumptions into configuration. Local paths, local ports, and local secrets must become explicit platform settings.
+
+## 2026-06-21 — Phase 14: Settings and install polish
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 14 moved Lexi away from hidden Terminal-only configuration. The app now has a real Settings window from the menu bar where the proxy URL and proxy token can be managed, the backend can be checked, and the URL can be reset to Railway or local defaults.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not build a full preference system, Keychain token storage, or Launch at Login yet. Those are still useful, but the immediate friction was that the working cloud configuration lived in `defaults write` commands instead of the product UI.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+`SettingsWindowController` hosts a SwiftUI `SettingsView`. It writes to the same UserDefaults keys Lexi already uses: `LexiProxyBaseURL` and `LexiProxyToken`. `AppDelegate` now creates fresh `ExplainClient` instances when checking status or running a lookup, so saved settings can take effect without relying on an old cached client.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+SwiftUI was used for the settings form because it is compact and already available in the app. The existing AppKit menu-bar architecture remains in place. The install script uses the existing packaging script, then copies the signed bundle into `/Applications` with `ditto`.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized operational usability over deeper security polish. The token is still stored in UserDefaults rather than Keychain. That is acceptable for this personal-use phase, but not for broad distribution.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main friction was the development shell environment repeatedly saturating with old sessions. The app-side implementation itself stayed straightforward once the settings boundary was clear.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+Once Lexi is installed into `/Applications`, Accessibility permissions should be granted to that stable app path. Rebuilding and launching from `dist/` can still create permission confusion if both copies exist.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A setting is not just a text field. It is a contract between UI, runtime configuration, saved defaults, and diagnostics. The important part is that the Settings window uses the same keys as the runtime app, so it changes the real behavior.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When a prototype starts working, the next bottleneck is usually not capability; it is operability. Make the working path visible, editable, and recoverable from inside the product.
