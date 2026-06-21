@@ -11,7 +11,7 @@ dotenv.config({ path: '../.env', override: false });
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? (process.env.PORT ? '0.0.0.0' : '127.0.0.1');
 const apiKey = process.env.ANTHROPIC_API_KEY;
-const model = process.env.ANTHROPIC_MODEL ?? 'claude-haiku-4-5-20251001';
+const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 const proxyToken = process.env.LEXI_PROXY_TOKEN;
 
 if (!apiKey) {
