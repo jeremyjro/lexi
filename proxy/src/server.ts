@@ -18,7 +18,7 @@ if (!apiKey) {
   console.warn('ANTHROPIC_API_KEY is not set. /explain will return 500 until it is configured.');
 }
 
-const anthropic = new Anthropic({ apiKey });
+const anthropic = apiKey ? new Anthropic({ apiKey }) : undefined;
 const app = express();
 
 app.use(cors({ origin: false }));
@@ -51,7 +51,7 @@ app.post('/explain', async (req, res) => {
     return;
   }
 
-  if (!apiKey) {
+  if (!anthropic) {
     res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured on the proxy.' });
     return;
   }
