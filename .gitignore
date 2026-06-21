@@ -5,6 +5,9 @@
 .build/
 .swiftpm/
 
+# Node build artifacts
+node_modules/
+
 # Xcode
 *.xcodeproj
 xcuserdata/
