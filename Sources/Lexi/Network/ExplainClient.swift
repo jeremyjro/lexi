@@ -1,6 +1,7 @@
 import Foundation
 
 struct ExplainErrorResponse: Decodable {
+    let code: String?
     let error: String
 }
 
@@ -84,7 +85,7 @@ final class ExplainClient {
                 errorBody.append(byte)
             }
             if let error = try? JSONDecoder().decode(ExplainErrorResponse.self, from: errorBody) {
-                throw ExplainClientError.proxyError(error.error)
+                throw ExplainClientError.proxyError(code: error.code, message: error.error)
             }
             throw ExplainClientError.httpStatus(httpResponse.statusCode)
         }
@@ -105,7 +106,7 @@ final class ExplainClient {
                     await onTiming(try decode(ProxyTiming.self, from: event.data))
                 case "error":
                     let error = try decode(SSEError.self, from: event.data)
-                    throw ExplainClientError.proxyError(error.message)
+                    throw ExplainClientError.proxyError(code: error.code, message: error.message)
                 default:
                     continue
                 }
@@ -122,7 +123,7 @@ final class ExplainClient {
                 await onTiming(try decode(ProxyTiming.self, from: event.data))
             case "error":
                 let error = try decode(SSEError.self, from: event.data)
-                throw ExplainClientError.proxyError(error.message)
+                throw ExplainClientError.proxyError(code: error.code, message: error.message)
             default:
                 continue
             }
@@ -222,25 +223,66 @@ private struct SSEDelta: Decodable {
 }
 
 private struct SSEError: Decodable {
+    let code: String?
     let message: String
 }
 
 enum ExplainClientError: LocalizedError {
     case invalidResponse
     case httpStatus(Int)
-    case proxyError(String)
+    case proxyError(code: String?, message: String)
     case proxyUnavailable(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            return "Invalid response from Lexi proxy."
+            return "Lexi received an invalid response from the proxy."
         case .httpStatus(let status):
-            return "Lexi proxy returned HTTP \(status)."
-        case .proxyError(let message):
-            return message
+            return httpStatusMessage(status)
+        case .proxyError(let code, let message):
+            return proxyErrorMessage(code: code, fallback: message)
         case .proxyUnavailable(let url):
-            return "Lexi proxy is not reachable at \(url). Start the local proxy, then try again."
+            return "Lexi proxy is not reachable at \(url). Check your internet connection or proxy URL in Settings."
+        }
+    }
+
+    private func httpStatusMessage(_ status: Int) -> String {
+        switch status {
+        case 400:
+            return "Lexi sent an invalid request to the proxy. Try a shorter selection."
+        case 401, 403:
+            return "Lexi proxy rejected the request. Check the proxy token in Settings."
+        case 404:
+            return "Lexi proxy endpoint was not found. Check the proxy URL in Settings."
+        case 429:
+            return "Lexi proxy is rate limited. Try again shortly."
+        case 500...599:
+            return "Lexi proxy is having a server issue. Check Railway health or try again shortly."
+        default:
+            return "Lexi proxy returned HTTP \(status)."
+        }
+    }
+
+    private func proxyErrorMessage(code: String?, fallback: String) -> String {
+        switch code {
+        case "unauthorized":
+            return "Lexi proxy rejected the request. Check the proxy token in Settings."
+        case "invalid_request":
+            return "Lexi could not send this selection. Try selecting a shorter phrase."
+        case "assistant_misconfigured":
+            return "The assistant backend is missing its Anthropic API key. Check Railway variables."
+        case "assistant_auth_failed":
+            return "The assistant API key was rejected. Check the Anthropic key in Railway."
+        case "assistant_model_unavailable":
+            return "The configured assistant model is unavailable. Check ANTHROPIC_MODEL in Railway."
+        case "assistant_rate_limited":
+            return "The assistant is rate limited. Try again shortly."
+        case "assistant_overloaded":
+            return "The assistant is overloaded. Try again shortly."
+        case "assistant_unavailable":
+            return "The assistant service is unavailable. Try again shortly."
+        default:
+            return fallback
         }
     }
 }

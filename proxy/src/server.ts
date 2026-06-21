@@ -32,7 +32,7 @@ app.use((req, res, next) => {
   const authorization = req.header('authorization') ?? '';
   const expected = `Bearer ${proxyToken}`;
   if (authorization !== expected) {
-    res.status(401).json({ error: 'Unauthorized Lexi proxy request.' });
+    res.status(401).json({ code: 'unauthorized', error: 'Unauthorized Lexi proxy request.' });
     return;
   }
 
@@ -52,12 +52,12 @@ app.post('/explain', async (req, res) => {
   const requestStartedAt = performance.now();
   const parsed = parseExplainRequest(req.body);
   if (!parsed.ok) {
-    res.status(400).json({ error: parsed.error });
+    res.status(400).json({ code: 'invalid_request', error: parsed.error });
     return;
   }
 
   if (!anthropic) {
-    res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured on the proxy.' });
+    res.status(500).json({ code: 'assistant_misconfigured', error: 'ANTHROPIC_API_KEY is not configured on the proxy.' });
     return;
   }
 
@@ -129,8 +129,9 @@ app.post('/explain', async (req, res) => {
     sendEvent(res, 'done', doneTiming);
     res.end();
   } catch (error) {
-    console.error('Anthropic /explain stream failed:', error);
-    sendEvent(res, 'error', { message: "Couldn't reach the assistant — try again." });
+    const proxyError = classifyAssistantError(error);
+    console.error('Anthropic /explain stream failed:', proxyError.code, error);
+    sendEvent(res, 'error', proxyError);
     res.end();
   }
 });
@@ -138,6 +139,57 @@ app.post('/explain', async (req, res) => {
 app.listen(port, host, () => {
   console.log(`Lexi proxy listening on http://${host}:${port}`);
 });
+
+type ProxyErrorCode =
+  | 'assistant_auth_failed'
+  | 'assistant_rate_limited'
+  | 'assistant_model_unavailable'
+  | 'assistant_overloaded'
+  | 'assistant_unavailable';
+
+type ProxyError = {
+  code: ProxyErrorCode;
+  message: string;
+};
+
+function classifyAssistantError(error: unknown): ProxyError {
+  const status = numericProperty(error, 'status');
+  const rawMessage = stringProperty(error, 'message').toLowerCase();
+
+  if (status === 401 || status === 403) {
+    return { code: 'assistant_auth_failed', message: 'The assistant API key was rejected. Check the Anthropic key in Railway.' };
+  }
+
+  if (status === 404 || rawMessage.includes('model')) {
+    return { code: 'assistant_model_unavailable', message: 'The configured assistant model is unavailable. Check ANTHROPIC_MODEL in Railway.' };
+  }
+
+  if (status === 429 || rawMessage.includes('rate')) {
+    return { code: 'assistant_rate_limited', message: 'The assistant is rate limited. Try again shortly.' };
+  }
+
+  if (status === 529 || rawMessage.includes('overloaded')) {
+    return { code: 'assistant_overloaded', message: 'The assistant is overloaded. Try again shortly.' };
+  }
+
+  return { code: 'assistant_unavailable', message: "Couldn't reach the assistant. Check Railway logs if this keeps happening." };
+}
+
+function numericProperty(value: unknown, key: string): number | undefined {
+  if (!value || typeof value !== 'object' || !(key in value)) {
+    return undefined;
+  }
+  const property = (value as Record<string, unknown>)[key];
+  return typeof property === 'number' ? property : undefined;
+}
+
+function stringProperty(value: unknown, key: string): string {
+  if (!value || typeof value !== 'object' || !(key in value)) {
+    return '';
+  }
+  const property = (value as Record<string, unknown>)[key];
+  return typeof property === 'string' ? property : '';
+}
 
 type ParseResult =
   | { ok: true; value: ExplainRequest }
