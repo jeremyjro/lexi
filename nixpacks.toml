@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["nodejs_20", "npm-9_x"]
+
+[phases.install]
+cmds = ["cd proxy && npm ci"]
+
+[phases.build]
+cmds = ["cd proxy && npm run build"]
+
+[start]
+cmd = "cd proxy && npm run start"
