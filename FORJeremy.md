@@ -545,3 +545,41 @@ UX polish is not only colors and spacing. It is also about preserving the intera
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 Once something works, reduce the cognitive load around using it. The best product improvements often make the user think less, not do more.
+
+## 2026-06-22 — Phase 17: Distribution identity
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 17 gave Lexi the basics of a real distributable Mac app identity. The app now has centralized version metadata, a bundled icon, Info.plist identity fields, optional Developer ID signing support, and a release ZIP builder.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not perform real Apple Developer ID signing or notarization because that requires Jeremy's Apple developer certificate and notary credentials. Instead, the scripts now support those paths when the credentials are available, while preserving local ad-hoc signing for development.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+`VERSION` is now the source of the marketing version. `scripts/package_app.sh` reads that file, computes a build number from Git history by default, copies `assets/Lexi.icns` into the app bundle, writes icon/category/version keys into Info.plist, and signs with either ad-hoc or a provided `SIGN_IDENTITY`. `scripts/build_release.sh` packages the app and creates a ZIP in `releases/`.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+Mac apps need identity at the bundle level: Info.plist metadata, icon resources, version/build numbers, and code signing. `iconutil` creates the `.icns` from the generated iconset, `codesign` verifies the bundle, and `ditto` creates a standard distributable ZIP.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized a repeatable distribution pipeline over App Store-level polish. The icon is generated and good enough for identity, but it is not yet a professionally designed brand asset. Notarization is supported but not executed.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The key product distinction is that local installation and public distribution are not the same thing. Phase 17 made that boundary explicit: ad-hoc signing is fine for Jeremy's Mac, while Developer ID signing and notarization are needed for smooth sharing.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+If `SIGN_IDENTITY` is set for notarization, it must be a valid `Developer ID Application` certificate. Notarization also requires `APPLE_ID`, `APPLE_TEAM_ID`, and an app-specific `APPLE_APP_PASSWORD` or equivalent notarytool credentials.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A Mac app's perceived legitimacy comes from boring metadata: stable bundle ID, icon, version, category, signature, and notarized archive. Without those, even a working app feels like a script.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Distribution is an engineering feature. If the build, identity, signing, and archive steps are not reproducible, every release becomes a manual ritual.

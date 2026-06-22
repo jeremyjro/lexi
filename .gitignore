@@ -5,6 +5,7 @@
 .build/
 .swiftpm/
 dist/
+releases/*.zip
 
 # Node build artifacts
 node_modules/
