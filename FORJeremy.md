@@ -507,3 +507,41 @@ A good error message is part of the product architecture. The moment Lexi became
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 As systems become distributed, reliability starts with naming failure modes. If you cannot name where something broke, every problem feels like the whole system failed.
+
+## 2026-06-21 — Phase 16: UX polish
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 16 made the core popup feel more like a deliberate product surface instead of a raw debug panel. The floating panel now has clearer status treatment, a larger reading area, better footer hints, and a more polished visual hierarchy.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not add in-panel interactive buttons yet because the panel is intentionally non-activating and click/dismiss behavior needs care. Instead, copying was added through the menu bar as `Copy Last Answer`, which fits the current app architecture.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+`RawCapturePanelController` still owns the floating panel, but `RawCapturePanelView` now has a top status bar, state-specific status labels, color accents, and clearer footer copy. `AppDelegate` stores the last successful answer and exposes a menu item to copy it.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+SwiftUI remains the right tool for panel presentation because the layout changes are declarative and compact. AppKit remains responsible for menu bar lifecycle, global hotkey behavior, and pasteboard integration.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized low-risk polish over deep interaction. The panel still avoids complex clickable controls. That preserves the current dismissal model while improving readability and everyday utility.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The install script surfaced a LaunchServices `-600` open failure after copying the app. The copy and signature were fine, so the installer now tolerates open failures rather than treating a post-install launch hiccup as an install failure.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+If clickable panel controls are added later, revisit `NSPanel` activation behavior and the global mouse dismissal monitor. Otherwise clicks intended for controls may dismiss the panel first.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+UX polish is not only colors and spacing. It is also about preserving the interaction contract: fast popup, readable answer, obvious state, easy dismissal, no accidental focus stealing.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Once something works, reduce the cognitive load around using it. The best product improvements often make the user think less, not do more.
