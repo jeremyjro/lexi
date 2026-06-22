@@ -184,8 +184,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard isEnabled else { return }
 
         if rawCapturePanel.isVisible {
-            explainTask?.cancel()
-            rawCapturePanel.hide()
+            if let selectedText = rawCapturePanel.selectedAnswerText,
+               rawCapturePanel.pushDummyLookup(term: selectedText) {
+                lastAnswer = rawCapturePanel.currentAnswer
+                rebuildMenu()
+            } else {
+                explainTask?.cancel()
+                rawCapturePanel.hide()
+            }
             return
         }
 
@@ -233,8 +239,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    let stack = LookupNavigationStack(
+                        rootTerm: capture.term,
+                        sourceText: capture.passage,
+                        answer: answer,
+                        appName: capture.appName,
+                        windowTitle: capture.windowTitle,
+                        sourceLabel: capture.source == .accessibility ? "Accessibility API" : "Clipboard fallback"
+                    )
                     self.lastAnswer = answer
-                    self.rawCapturePanel.update(status: .answered(capture, answer))
+                    self.rawCapturePanel.update(status: .lookup(stack))
                     self.rebuildMenu()
                 }
             } catch {

@@ -583,3 +583,41 @@ A Mac app's perceived legitimacy comes from boring metadata: stable bundle ID, i
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 Distribution is an engineering feature. If the build, identity, signing, and archive steps are not reproducible, every release becomes a manual ritual.
+
+## 2026-06-22 — Nested lookups Phase 1: Selectable answers and navigation stack
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+This pivot starts Lexi V2's nested lookup system. The first implementation phase intentionally does not call the model for child explanations yet. It proves the hard local product mechanics first: representing answers as a navigation stack, rendering breadcrumbs, selecting text inside Lexi's own answer panel, pushing a child layer, popping back, and jumping to root instantly.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not wire real lineage-aware generation yet because the spec explicitly recommends stopping after stack mechanics are testable. We also did not persist lookup trees between root lookups; a new root lookup should still discard the old stack.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+`LookupNavigationStack` owns the active path of `LookupNode`s. Root answers are now converted into a stack after the first model response completes. `RawCapturePanelViewModel` mutates that stack for dummy drill-down, Esc pop, Command-Up root jump, and breadcrumb jumps. The panel owns selectable answer text through an AppKit `NSTextView` wrapper, avoiding Accessibility capture for nested selections.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+Nested capture is inside Lexi, so AppKit text selection is the right primitive. The main app still uses Accessibility for external app capture, but nested lookup selection uses Lexi-owned UI state. This separation keeps the original capture path untouched.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized navigational correctness over answer quality. Child nodes use placeholder text for now. That lets us test infinite-ish depth, breadcrumbs, back, root jump, and cached parent restoration before adding network complexity.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The panel had to become key-capable enough for owned text selection and local key handling. This is subtle because Lexi's panel is intentionally non-activating and should not feel like a normal document window.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+When real nested generation lands, preserve the invariant that only push generates. Pop, root jump, and breadcrumb jump must only read cached node answers. If those paths make network calls, the feature loses its main product value.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+Nested lookup is not just “call explain again.” It is a navigation model. Without a stack and cache, the reader cannot safely drill down because they lose their place.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+For exploration UIs, orientation matters as much as generation. Users will only go deeper if getting back feels instant and guaranteed.
