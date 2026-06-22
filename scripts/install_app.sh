@@ -21,7 +21,7 @@ pkill -x Lexi 2>/dev/null || true
 rm -rf "$INSTALL_PATH"
 ditto "$SOURCE_APP" "$INSTALL_PATH"
 codesign --verify --deep --strict "$INSTALL_PATH"
-open "$INSTALL_PATH"
+open "$INSTALL_PATH" || true
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" || true
 
 echo "Installed $INSTALL_PATH"

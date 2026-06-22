@@ -48,7 +48,7 @@ final class RawCapturePanelController {
 
 final class RawCapturePanel: NSPanel {
     private let viewModel = RawCapturePanelViewModel()
-    private let panelSize = NSSize(width: 380, height: 340)
+    private let panelSize = NSSize(width: 420, height: 380)
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -140,22 +140,46 @@ struct RawCapturePanelView: View {
     @ObservedObject var viewModel: RawCapturePanelViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
+            topBar
             header
             Divider()
             content
             Spacer(minLength: 0)
-            Text(footerText)
-                .font(.caption)
+            HStack(spacing: 8) {
+                Text(footerText)
+                Spacer()
+                Text("Esc to dismiss")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(18)
+        .frame(width: 420, height: 380, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 8) {
+            Text("Lexi")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+            Text(statusTitle)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(statusColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(statusColor.opacity(0.12), in: Capsule())
+            Spacer()
+            Text("⌥ Space")
+                .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
         }
-        .padding(16)
-        .frame(width: 380, height: 340, alignment: .topLeading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
     }
 
     @ViewBuilder
@@ -203,8 +227,8 @@ struct RawCapturePanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(answer.isEmpty ? "…" : answer)
-                        .font(.system(size: 15))
-                        .lineSpacing(3)
+                        .font(.system(size: 15, weight: .regular))
+                        .lineSpacing(4)
                         .textSelection(.enabled)
                     Divider()
                     captureDetails(capture)
@@ -213,6 +237,9 @@ struct RawCapturePanelView: View {
             }
         case .error(let capture, let message):
             VStack(alignment: .leading, spacing: 10) {
+                Text("What happened")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
                 Text(message)
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
@@ -239,13 +266,53 @@ struct RawCapturePanelView: View {
     private var footerText: String {
         switch viewModel.status {
         case .answered:
-            return "Esc, click away, or hotkey again to dismiss"
+            return "Answer ready · Copy Last Answer from menu"
         case .streaming:
-            return "Streaming…"
+            return "Streaming from Railway…"
         case .loading:
             return "Waiting for first token…"
+        case .noSelection:
+            return "Select text anywhere on your Mac"
+        case .noPermission:
+            return "Grant Accessibility for Lexi"
+        case .error:
+            return "Check Settings if this keeps happening"
         default:
-            return "Lexi"
+            return "Ready"
+        }
+    }
+
+    private var statusTitle: String {
+        switch viewModel.status {
+        case .captured:
+            return "Captured"
+        case .loading:
+            return "Asking"
+        case .streaming:
+            return "Streaming"
+        case .answered:
+            return "Answered"
+        case .error:
+            return "Needs attention"
+        case .noSelection:
+            return "No selection"
+        case .noPermission:
+            return "Permission"
+        }
+    }
+
+    private var statusColor: Color {
+        switch viewModel.status {
+        case .answered:
+            return .green
+        case .streaming, .loading:
+            return .blue
+        case .error, .noPermission:
+            return .orange
+        case .noSelection:
+            return .gray
+        case .captured:
+            return .purple
         }
     }
 

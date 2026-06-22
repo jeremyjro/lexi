@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let rawCapturePanel = RawCapturePanelController()
     private var settingsWindow: SettingsWindowController?
     private var explainTask: Task<Void, Never>?
+    private var lastAnswer: String?
     private var legacyModifierMonitor: Any?
     private var isEnabled = true
     private var isOptionCommandHeld = false
@@ -65,6 +66,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let proxyItem = NSMenuItem(title: "Check Proxy Status", action: #selector(checkProxyStatus), keyEquivalent: "")
         proxyItem.target = self
         menu.addItem(proxyItem)
+
+        let copyAnswerItem = NSMenuItem(title: "Copy Last Answer", action: #selector(copyLastAnswer), keyEquivalent: "c")
+        copyAnswerItem.target = self
+        copyAnswerItem.isEnabled = lastAnswer?.isEmpty == false
+        menu.addItem(copyAnswerItem)
 
         menu.addItem(.separator())
 
@@ -147,6 +153,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func copyLastAnswer() {
+        guard let lastAnswer, !lastAnswer.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(lastAnswer, forType: .string)
+    }
+
     @objc private func quitLexi() {
         NSApp.terminate(nil)
     }
@@ -221,7 +233,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    self.lastAnswer = answer
                     self.rawCapturePanel.update(status: .answered(capture, answer))
+                    self.rebuildMenu()
                 }
             } catch {
                 guard !Task.isCancelled else { return }
