@@ -36,6 +36,10 @@ struct LookupNavigationStack: Equatable {
         nodesById[currentId]
     }
 
+    var rootNode: LookupNode? {
+        nodesById[rootId]
+    }
+
     var depth: Int {
         max(0, activePath.count - 1)
     }
@@ -50,15 +54,15 @@ struct LookupNavigationStack: Equatable {
         return path.reversed()
     }
 
-    mutating func pushDummy(term rawTerm: String) {
-        guard let parent = currentNode else { return }
+    mutating func pushPending(term rawTerm: String) -> UUID? {
+        guard let parent = currentNode else { return nil }
         let term = rawTerm.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty else { return }
+        guard !term.isEmpty else { return nil }
         let child = LookupNode(
             id: UUID(),
             term: term,
             sourceText: parent.answer,
-            answer: "Nested lookup placeholder for \"\(term)\".\n\nPhase 1 proves the navigation stack, breadcrumb, selection, back, root jump, and cached parent restore. Phase 2 will replace this dummy answer with a real streamed lineage-aware explanation.",
+            answer: "",
             parentId: parent.id,
             appName: "Lexi",
             windowTitle: "Nested lookup from \(parent.term)",
@@ -66,6 +70,13 @@ struct LookupNavigationStack: Equatable {
         )
         nodesById[child.id] = child
         currentId = child.id
+        return child.id
+    }
+
+    mutating func updateAnswer(nodeId: UUID, answer: String) {
+        guard var node = nodesById[nodeId] else { return }
+        node.answer = answer
+        nodesById[nodeId] = node
     }
 
     mutating func pop() -> Bool {

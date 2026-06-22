@@ -21,6 +21,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rawCapturePanel.onDismiss = { [weak self] in
             self?.explainTask?.cancel()
         }
+        rawCapturePanel.onNestedLookupRequested = { [weak self] term, stack in
+            self?.requestNestedExplanation(term: term, stack: stack)
+        }
 
         requestAccessibilityPermission()
         let isTrusted = AXIsProcessTrusted()
@@ -185,7 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if rawCapturePanel.isVisible {
             if let selectedText = rawCapturePanel.selectedAnswerText,
-               rawCapturePanel.pushDummyLookup(term: selectedText) {
+               rawCapturePanel.requestNestedLookup(term: selectedText) {
                 lastAnswer = rawCapturePanel.currentAnswer
                 rebuildMenu()
             } else {
@@ -211,6 +214,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("Capture failed: Accessibility permission missing")
             showPermissionOnboarding()
             rawCapturePanel.show(status: .noPermission, anchorRect: nil)
+        }
+    }
+
+    private func requestNestedExplanation(term: String, stack parentStack: LookupNavigationStack) {
+        explainTask?.cancel()
+        guard let childId = rawCapturePanel.beginNestedLookup(term: term) else { return }
+        lastAnswer = rawCapturePanel.currentAnswer
+        rebuildMenu()
+
+        explainTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let requestStartedAt = currentMilliseconds()
+                let client = ExplainClient()
+                let answer = try await client.explainNested(term: term, in: parentStack) { [weak self] _, accumulated in
+                    guard let self else { return }
+                    self.rawCapturePanel.updateLookupAnswer(nodeId: childId, answer: accumulated)
+                } onTiming: { timing in
+                    if let proxyTtftMs = timing.proxyTtftMs, let anthropicTtftMs = timing.anthropicTtftMs {
+                        print("Lexi nested timing: proxyTtft=\(proxyTtftMs)ms anthropicTtft=\(anthropicTtftMs)ms totalStarted=\(Int(self.currentMilliseconds() - requestStartedAt))ms")
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.rawCapturePanel.updateLookupAnswer(nodeId: childId, answer: answer)
+                    self.lastAnswer = answer
+                    self.rebuildMenu()
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                let message = error.localizedDescription.isEmpty ? "Couldn't explain that nested term — try again." : error.localizedDescription
+                await MainActor.run {
+                    self.rawCapturePanel.updateLookupAnswer(nodeId: childId, answer: message)
+                    self.lastAnswer = message
+                    self.rebuildMenu()
+                }
+            }
         }
     }
 

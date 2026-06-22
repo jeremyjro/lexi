@@ -3,6 +3,11 @@ import SwiftUI
 
 final class RawCapturePanelController {
     var onDismiss: (() -> Void)?
+    var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
+        didSet {
+            panel.onNestedLookupRequested = onNestedLookupRequested
+        }
+    }
 
     private let panel: RawCapturePanel
     private var keyMonitor: Any?
@@ -39,6 +44,10 @@ final class RawCapturePanelController {
         panel.currentAnswer
     }
 
+    var currentLookupStack: LookupNavigationStack? {
+        panel.currentLookupStack
+    }
+
     func show(status: RawCapturePanelStatus, anchorRect: CGRect?) {
         panel.update(status: status)
         panel.position(anchorRect: anchorRect)
@@ -50,8 +59,16 @@ final class RawCapturePanelController {
     }
 
     @discardableResult
-    func pushDummyLookup(term: String) -> Bool {
-        panel.pushDummyLookup(term: term)
+    func requestNestedLookup(term: String) -> Bool {
+        panel.requestNestedLookup(term: term)
+    }
+
+    func beginNestedLookup(term: String) -> UUID? {
+        panel.beginNestedLookup(term: term)
+    }
+
+    func updateLookupAnswer(nodeId: UUID, answer: String) {
+        panel.updateLookupAnswer(nodeId: nodeId, answer: answer)
     }
 
     func hide() {
@@ -96,6 +113,11 @@ final class RawCapturePanel: NSPanel {
     private let viewModel = RawCapturePanelViewModel()
     private let panelSize = NSSize(width: 420, height: 380)
 
+    var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
+        get { viewModel.onNestedLookupRequested }
+        set { viewModel.onNestedLookupRequested = newValue }
+    }
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
@@ -127,13 +149,25 @@ final class RawCapturePanel: NSPanel {
         viewModel.currentAnswer
     }
 
+    var currentLookupStack: LookupNavigationStack? {
+        viewModel.currentLookupStack
+    }
+
     func update(status: RawCapturePanelStatus) {
         viewModel.update(status: status)
     }
 
     @discardableResult
-    func pushDummyLookup(term: String) -> Bool {
-        viewModel.pushDummyLookup(term: term)
+    func requestNestedLookup(term: String) -> Bool {
+        viewModel.requestNestedLookup(term: term)
+    }
+
+    func beginNestedLookup(term: String) -> UUID? {
+        viewModel.beginNestedLookup(term: term)
+    }
+
+    func updateLookupAnswer(nodeId: UUID, answer: String) {
+        viewModel.updateLookupAnswer(nodeId: nodeId, answer: answer)
     }
 
     func popLookup() -> Bool {
@@ -202,6 +236,7 @@ enum RawCapturePanelStatus {
 final class RawCapturePanelViewModel: ObservableObject {
     @Published var status: RawCapturePanelStatus = .noSelection(appName: "", windowTitle: "")
     @Published var selectedAnswerText = ""
+    var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)?
 
     var currentAnswer: String? {
         switch status {
@@ -214,20 +249,36 @@ final class RawCapturePanelViewModel: ObservableObject {
         }
     }
 
+    var currentLookupStack: LookupNavigationStack? {
+        guard case .lookup(let stack) = status else { return nil }
+        return stack
+    }
+
     func update(status: RawCapturePanelStatus) {
         selectedAnswerText = ""
         self.status = status
     }
 
     @discardableResult
-    func pushDummyLookup(term: String) -> Bool {
+    func requestNestedLookup(term: String) -> Bool {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        guard case .lookup(var stack) = status else { return false }
-        stack.pushDummy(term: trimmed)
+        guard !trimmed.isEmpty, case .lookup(let stack) = status else { return false }
+        onNestedLookupRequested?(trimmed, stack)
+        return true
+    }
+
+    func beginNestedLookup(term: String) -> UUID? {
+        guard case .lookup(var stack) = status else { return nil }
+        let nodeId = stack.pushPending(term: term)
         selectedAnswerText = ""
         status = .lookup(stack)
-        return true
+        return nodeId
+    }
+
+    func updateLookupAnswer(nodeId: UUID, answer: String) {
+        guard case .lookup(var stack) = status else { return }
+        stack.updateAnswer(nodeId: nodeId, answer: answer)
+        status = .lookup(stack)
     }
 
     func popLookup() -> Bool {
@@ -402,12 +453,27 @@ struct RawCapturePanelView: View {
     private func lookupContent(_ stack: LookupNavigationStack) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if let node = stack.currentNode {
-                SelectableAnswerView(
-                    text: node.answer,
-                    onSelectionChanged: { viewModel.selectedAnswerText = $0 },
-                    onDoubleClick: { term in viewModel.pushDummyLookup(term: term) }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if node.answer.isEmpty {
+                    HStack(spacing: 8) {
+                        if reduceMotion {
+                            Text("…")
+                                .font(.system(size: 14, weight: .semibold))
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text("Explaining \"\(node.term)\"…")
+                            .font(.system(size: 14, weight: .medium))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    SelectableAnswerView(
+                        text: node.answer,
+                        onSelectionChanged: { viewModel.selectedAnswerText = $0 },
+                        onDoubleClick: { term in viewModel.requestNestedLookup(term: term) }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     metadataRow("Source", node.sourceLabel)

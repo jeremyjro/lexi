@@ -12,14 +12,35 @@ Rules:
 - If the passage is empty (no surrounding context was captured), give the most likely intended meaning of the term and keep it brief.
 - Keep the whole response under ~60 words unless the concept truly needs more.`;
 
+export type ExplainLineage = {
+  rootTerm: string;
+  rootSourceText: string;
+  parentTerm: string;
+  parentAnswer: string;
+  depth: number;
+};
+
 export type ExplainRequest = {
   term: string;
   passage: string;
   windowTitle: string;
   appName: string;
+  lineage?: ExplainLineage;
 };
 
 export function buildUserMessage(input: ExplainRequest): string {
+  if (input.lineage) {
+    return `NESTED LOOKUP
+ROOT TERM: ${input.lineage.rootTerm}
+ROOT SOURCE TEXT: ${input.lineage.rootSourceText}
+PARENT TERM: ${input.lineage.parentTerm}
+PARENT EXPLANATION THE READER WAS READING: ${input.lineage.parentAnswer}
+DEPTH: ${input.lineage.depth}
+HIGHLIGHTED TERM INSIDE PARENT EXPLANATION: ${input.term}
+
+Explain HIGHLIGHTED TERM as it is used in PARENT EXPLANATION. Keep it brief so the reader can return to the parent explanation.`;
+  }
+
   return `TERM: ${input.term}
 PASSAGE: ${input.passage}
 WINDOW TITLE: ${input.windowTitle}

@@ -12,6 +12,7 @@ const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? (process.env.PORT ? '0.0.0.0' : '127.0.0.1');
 const apiKey = process.env.ANTHROPIC_API_KEY;
 const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+const nestedModel = process.env.ANTHROPIC_NESTED_MODEL ?? model;
 const proxyToken = process.env.LEXI_PROXY_TOKEN;
 
 if (!apiKey) {
@@ -43,6 +44,7 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     model,
+    nestedModel,
     anthropicApiKeyConfigured: Boolean(apiKey),
     proxyTokenConfigured: Boolean(proxyToken),
   });
@@ -72,17 +74,18 @@ app.post('/explain', async (req, res) => {
   let firstDeltaAt: number | undefined;
   let outputCharacters = 0;
   const termForLog = parsed.value.term.slice(0, 60);
+  const requestModel = parsed.value.lineage ? nestedModel : model;
 
   sendEvent(res, 'meta', {
-    model,
+    model: requestModel,
     proxyAcceptedMs: elapsedMs(requestStartedAt),
   });
 
   try {
     const anthropicStartedAt = performance.now();
     const stream = await anthropic.messages.create({
-      model,
-      max_tokens: 150,
+      model: requestModel,
+      max_tokens: parsed.value.lineage ? 120 : 150,
       temperature: 0.2,
       system: [
         {
@@ -200,11 +203,12 @@ function parseExplainRequest(body: unknown): ParseResult {
     return { ok: false, error: 'Expected JSON object.' };
   }
 
-  const value = body as Partial<Record<keyof ExplainRequest, unknown>>;
+  const value = body as Record<string, unknown>;
   const term = stringField(value.term).slice(0, 240);
   const passage = stringField(value.passage).slice(0, 1200);
   const windowTitle = stringField(value.windowTitle).slice(0, 240);
   const appName = stringField(value.appName).slice(0, 120);
+  const lineage = parseLineage(value.lineage);
 
   if (!term) {
     return { ok: false, error: 'term is required.' };
@@ -217,12 +221,42 @@ function parseExplainRequest(body: unknown): ParseResult {
       passage,
       windowTitle,
       appName,
+      ...(lineage ? { lineage } : {}),
     },
+  };
+}
+
+function parseLineage(value: unknown): ExplainRequest['lineage'] | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const lineage = value as Record<string, unknown>;
+  const rootTerm = stringField(lineage.rootTerm).slice(0, 240);
+  const rootSourceText = stringField(lineage.rootSourceText).slice(0, 1000);
+  const parentTerm = stringField(lineage.parentTerm).slice(0, 240);
+  const parentAnswer = stringField(lineage.parentAnswer).slice(0, 1600);
+  const depth = numberField(lineage.depth);
+
+  if (!rootTerm || !parentAnswer) {
+    return undefined;
+  }
+
+  return {
+    rootTerm,
+    rootSourceText,
+    parentTerm,
+    parentAnswer,
+    depth,
   };
 }
 
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function numberField(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
 }
 
 function sendEvent(res: express.Response, event: string, data: unknown) {

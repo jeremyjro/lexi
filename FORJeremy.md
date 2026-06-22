@@ -621,3 +621,41 @@ Nested lookup is not just “call explain again.” It is a navigation model. Wi
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 For exploration UIs, orientation matters as much as generation. Users will only go deeper if getting back feels instant and guaranteed.
+
+## 2026-06-22 — Nested lookups Phase 2: Real lineage-aware child generation
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+Phase 2 replaced dummy nested lookup children with real streamed explanations. When the reader selects or double-clicks a term inside a Lexi answer, Lexi now pushes a pending child node, streams a real explanation into that node, and keeps the parent/root answers cached for instant navigation.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not add the learning-loop event store yet, and we did not force a separate nested Haiku model in production because the currently working Railway model configuration should remain stable. The proxy now supports `ANTHROPIC_NESTED_MODEL`, but defaults nested calls to the existing model until that env var is deliberately set.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+`ExplainClient.explainNested` builds a lineage payload from the current `LookupNavigationStack`. The proxy accepts optional `lineage`, builds a nested prompt from root source, parent answer, highlighted term, and depth, then streams the result back through the same SSE path. The panel updates the child node's cached answer as tokens arrive.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+We reused the existing `/explain` route and SSE parser instead of adding another endpoint. The request shape is backward compatible: root lookups send the old fields, nested lookups add optional lineage.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized preserving root lookup behavior and instant cached navigation. Nested generation is real now, but analytics and formal tests are still deferred to later phases.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The key refactor was moving nested lookup initiation out of the SwiftUI view and back into `AppDelegate`, where network tasks already live. That keeps UI state and async generation coordinated without making the view own backend concerns.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+If a user pops away while a nested answer is still streaming, the child node can continue updating in cache. That is acceptable for now, but future UI may want explicit cancellation or a visible background-generation state.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+The important part is not simply that a second explanation can be requested. The important part is that the second explanation is aware of the parent answer and that returning to the parent requires no regeneration.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When adding depth to a product, make deeper work contextual and make returning cheap. That combination is what turns exploration from a tangent into a loop.

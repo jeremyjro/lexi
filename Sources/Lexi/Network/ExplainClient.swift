@@ -60,12 +60,51 @@ final class ExplainClient {
         onDelta: @escaping @MainActor (String, String) -> Void,
         onTiming: @escaping @MainActor (ProxyTiming) -> Void
     ) async throws -> String {
+        try await performExplain(
+            payload: ExplainPayload(capture: capture),
+            onDelta: onDelta,
+            onTiming: onTiming
+        )
+    }
+
+    func explainNested(
+        term: String,
+        in stack: LookupNavigationStack,
+        onDelta: @escaping @MainActor (String, String) -> Void,
+        onTiming: @escaping @MainActor (ProxyTiming) -> Void
+    ) async throws -> String {
+        guard let root = stack.rootNode, let parent = stack.currentNode else {
+            throw ExplainClientError.invalidResponse
+        }
+
+        let payload = ExplainPayload(
+            term: term,
+            passage: parent.answer,
+            windowTitle: parent.windowTitle,
+            appName: "Lexi",
+            lineage: ExplainLineagePayload(
+                rootTerm: root.term,
+                rootSourceText: root.sourceText,
+                parentTerm: parent.term,
+                parentAnswer: parent.answer,
+                depth: stack.depth + 1
+            )
+        )
+
+        return try await performExplain(payload: payload, onDelta: onDelta, onTiming: onTiming)
+    }
+
+    private func performExplain(
+        payload: ExplainPayload,
+        onDelta: @escaping @MainActor (String, String) -> Void,
+        onTiming: @escaping @MainActor (ProxyTiming) -> Void
+    ) async throws -> String {
         var request = URLRequest(url: endpoint("explain"))
         request.httpMethod = "POST"
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyProxyAuthorization(to: &request)
-        request.httpBody = try JSONEncoder().encode(ExplainPayload(capture: capture))
+        request.httpBody = try JSONEncoder().encode(payload)
 
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
@@ -154,13 +193,31 @@ private struct ExplainPayload: Encodable {
     let passage: String
     let windowTitle: String
     let appName: String
+    let lineage: ExplainLineagePayload?
 
     init(capture: CapturedSelection) {
         term = capture.term
         passage = capture.passage
         windowTitle = capture.windowTitle
         appName = capture.appName
+        lineage = nil
     }
+
+    init(term: String, passage: String, windowTitle: String, appName: String, lineage: ExplainLineagePayload?) {
+        self.term = term
+        self.passage = passage
+        self.windowTitle = windowTitle
+        self.appName = appName
+        self.lineage = lineage
+    }
+}
+
+private struct ExplainLineagePayload: Encodable {
+    let rootTerm: String
+    let rootSourceText: String
+    let parentTerm: String
+    let parentAnswer: String
+    let depth: Int
 }
 
 private struct SSEEvent {
