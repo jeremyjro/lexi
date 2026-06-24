@@ -95,14 +95,18 @@ final class RawCapturePanelController {
     @discardableResult
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         guard panel.isVisible else { return false }
-        if event.modifierFlags.contains(.command), event.keyCode == 126 {
-            panel.jumpToRootLookup()
+        if event.keyCode == 123 {
+            _ = panel.popLookup()
+            return true
+        }
+        if event.keyCode == 124 {
+            if !panel.requestNestedLookupFromSelection() {
+                panel.jumpToLatestChildLookup()
+            }
             return true
         }
         if event.keyCode == 53 {
-            if !panel.popLookup() {
-                hide()
-            }
+            hide()
             return true
         }
         return false
@@ -142,7 +146,8 @@ final class RawCapturePanel: NSPanel {
     }
 
     var selectedAnswerText: String {
-        viewModel.selectedAnswerText
+        let liveSelection = liveSelectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return liveSelection.isEmpty ? viewModel.selectedAnswerText : liveSelection
     }
 
     var currentAnswer: String? {
@@ -162,6 +167,11 @@ final class RawCapturePanel: NSPanel {
         viewModel.requestNestedLookup(term: term)
     }
 
+    @discardableResult
+    func requestNestedLookupFromSelection() -> Bool {
+        viewModel.requestNestedLookupFromSelection()
+    }
+
     func beginNestedLookup(term: String) -> UUID? {
         viewModel.beginNestedLookup(term: term)
     }
@@ -176,6 +186,11 @@ final class RawCapturePanel: NSPanel {
 
     func jumpToRootLookup() {
         viewModel.jumpToRootLookup()
+    }
+
+    @discardableResult
+    func jumpToLatestChildLookup() -> Bool {
+        viewModel.jumpToLatestChildLookup()
     }
 
     func position(anchorRect: CGRect?) {
@@ -215,6 +230,26 @@ final class RawCapturePanel: NSPanel {
         setFrame(NSRect(origin: origin, size: panelSize), display: true)
     }
 
+    private var liveSelectedText: String {
+        if let responder = firstResponder as? NSTextView {
+            return responder.selectedText
+        }
+        guard let contentView else { return "" }
+        return firstSelectedText(in: contentView)
+    }
+
+    private func firstSelectedText(in view: NSView) -> String {
+        if let textView = view as? NSTextView {
+            let text = textView.selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return text }
+        }
+        for subview in view.subviews {
+            let text = firstSelectedText(in: subview)
+            if !text.isEmpty { return text }
+        }
+        return ""
+    }
+
     private func screen(containing anchorRect: CGRect?) -> NSScreen? {
         guard let anchorRect else { return NSScreen.screens.first { $0.visibleFrame.contains(NSEvent.mouseLocation) } }
         return NSScreen.screens.first { $0.visibleFrame.intersects(anchorRect) }
@@ -227,6 +262,11 @@ enum RawCapturePanelStatus {
     case streaming(CapturedSelection, String)
     case answered(CapturedSelection, String)
     case lookup(LookupNavigationStack)
+    case buddyMessage(title: String, message: String)
+    case buddyLoading(BuddyCaptureContext)
+    case buddyStreaming(BuddyCaptureContext, String)
+    case buddyError(BuddyCaptureContext?, String)
+    case buddyPermissionMissing([BuddyPermission])
     case error(CapturedSelection?, String)
     case noSelection(appName: String, windowTitle: String)
     case noPermission
@@ -240,7 +280,7 @@ final class RawCapturePanelViewModel: ObservableObject {
 
     var currentAnswer: String? {
         switch status {
-        case .streaming(_, let answer), .answered(_, let answer):
+        case .streaming(_, let answer), .answered(_, let answer), .buddyStreaming(_, let answer):
             return answer
         case .lookup(let stack):
             return stack.currentNode?.answer
@@ -265,6 +305,11 @@ final class RawCapturePanelViewModel: ObservableObject {
         guard !trimmed.isEmpty, case .lookup(let stack) = status else { return false }
         onNestedLookupRequested?(trimmed, stack)
         return true
+    }
+
+    @discardableResult
+    func requestNestedLookupFromSelection() -> Bool {
+        requestNestedLookup(term: selectedAnswerText)
     }
 
     func beginNestedLookup(term: String) -> UUID? {
@@ -294,6 +339,15 @@ final class RawCapturePanelViewModel: ObservableObject {
         stack.jumpToRoot()
         selectedAnswerText = ""
         status = .lookup(stack)
+    }
+
+    @discardableResult
+    func jumpToLatestChildLookup() -> Bool {
+        guard case .lookup(var stack) = status else { return false }
+        guard stack.jumpToLatestChild() else { return false }
+        selectedAnswerText = ""
+        status = .lookup(stack)
+        return true
     }
 
     func jump(to nodeId: UUID) {
@@ -358,6 +412,21 @@ struct RawCapturePanelView: View {
             captureHeader(capture)
         case .lookup(let stack):
             lookupHeader(stack)
+        case .buddyMessage(let title, _):
+            Text(title)
+                .font(.headline)
+        case .buddyLoading(let capture), .buddyStreaming(let capture, _):
+            buddyHeader(capture)
+        case .buddyError(let capture, _):
+            if let capture {
+                buddyHeader(capture)
+            } else {
+                Text("Buddy Capture needs attention")
+                    .font(.headline)
+            }
+        case .buddyPermissionMissing:
+            Text("Buddy Capture permissions needed")
+                .font(.headline)
         case .error(let capture, _):
             if let capture {
                 captureHeader(capture)
@@ -408,6 +477,65 @@ struct RawCapturePanelView: View {
             }
         case .lookup(let stack):
             lookupContent(stack)
+        case .buddyMessage(_, let message):
+            VStack(alignment: .leading, spacing: 10) {
+                Text(message)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                Text("If no full-screen overlay appears, use Settings → Permissions to re-check Accessibility and Screen Recording for the installed /Applications/Lexi.app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .buddyLoading(let capture):
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    if reduceMotion {
+                        Text("…")
+                            .font(.system(size: 14, weight: .semibold))
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text("Asking about your screen…")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                buddyDetails(capture)
+            }
+        case .buddyStreaming(let capture, let answer):
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(answer.isEmpty ? "…" : answer)
+                        .font(.system(size: 15, weight: .regular))
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
+                    Divider()
+                    buddyDetails(capture)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        case .buddyError(let capture, let message):
+            VStack(alignment: .leading, spacing: 10) {
+                Text("What happened")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(message)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                if let capture {
+                    Divider()
+                    buddyDetails(capture)
+                }
+            }
+        case .buddyPermissionMissing(let permissions):
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Open System Settings and enable these permissions for Lexi, then choose Re-check Permissions from the menu bar.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                ForEach(permissions, id: \.title) { permission in
+                    Label(permission.title, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
         case .error(let capture, let message):
             VStack(alignment: .leading, spacing: 10) {
                 Text("What happened")
@@ -423,7 +551,7 @@ struct RawCapturePanelView: View {
             }
         case .noSelection(let appName, let windowTitle):
             VStack(alignment: .leading, spacing: 8) {
-                Text("Highlight a word or phrase, then press Option + Space or Option + Command.")
+                Text("Highlight a word or phrase, hold Option + Space, then release.")
                 metadataRow("App", appName.isEmpty ? "Unknown" : appName)
                 metadataRow("Window", windowTitle.isEmpty ? "Unknown" : windowTitle)
             }
@@ -470,7 +598,7 @@ struct RawCapturePanelView: View {
                     SelectableAnswerView(
                         text: node.answer,
                         onSelectionChanged: { viewModel.selectedAnswerText = $0 },
-                        onDoubleClick: { term in viewModel.requestNestedLookup(term: term) }
+                        onDoubleClick: { _ in }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -526,11 +654,17 @@ struct RawCapturePanelView: View {
         case .answered:
             return "Answer ready · Copy Last Answer from menu"
         case .lookup(let stack):
-            return stack.depth == 0 ? "Select inside answer, then ⌥ Space to drill" : "Esc pops up · ⌘↑ jumps to root"
-        case .streaming:
+            return stack.depth == 0 ? "Highlight inside answer, then press → to drill" : "← pops up · → drills down or reopens child"
+        case .streaming, .buddyStreaming:
             return "Streaming from Railway…"
-        case .loading:
+        case .buddyMessage:
+            return "Drag a region or press Esc to cancel"
+        case .loading, .buddyLoading:
             return "Waiting for first token…"
+        case .buddyPermissionMissing:
+            return "Grant Buddy Capture permissions"
+        case .buddyError:
+            return "Check Settings if this keeps happening"
         case .noSelection:
             return "Select text anywhere on your Mac"
         case .noPermission:
@@ -544,8 +678,8 @@ struct RawCapturePanelView: View {
 
     private var footerShortcutText: String {
         switch viewModel.status {
-        case .lookup(let stack):
-            return stack.depth == 0 ? "Esc to dismiss" : "⌘↑ root"
+        case .lookup:
+            return "← / → · Esc closes"
         default:
             return "Esc to dismiss"
         }
@@ -555,15 +689,17 @@ struct RawCapturePanelView: View {
         switch viewModel.status {
         case .captured:
             return "Captured"
-        case .loading:
+        case .loading, .buddyLoading:
             return "Asking"
-        case .streaming:
+        case .buddyMessage:
+            return "Buddy"
+        case .streaming, .buddyStreaming:
             return "Streaming"
         case .answered:
             return "Answered"
         case .lookup(let stack):
             return stack.depth == 0 ? "Answered" : "Depth \(stack.depth)"
-        case .error:
+        case .buddyError, .buddyPermissionMissing, .error:
             return "Needs attention"
         case .noSelection:
             return "No selection"
@@ -576,9 +712,9 @@ struct RawCapturePanelView: View {
         switch viewModel.status {
         case .answered, .lookup:
             return .green
-        case .streaming, .loading:
+        case .streaming, .loading, .buddyStreaming, .buddyLoading, .buddyMessage:
             return .blue
-        case .error, .noPermission:
+        case .error, .noPermission, .buddyError, .buddyPermissionMissing:
             return .orange
         case .noSelection:
             return .gray
@@ -614,6 +750,58 @@ struct RawCapturePanelView: View {
                     .lineLimit(5)
                     .textSelection(.enabled)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func buddyHeader(_ capture: BuddyCaptureContext) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(capture.displayTitle)
+                .font(.headline)
+                .lineLimit(2)
+            Text("\(capture.appName) · Buddy Capture")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func buddyDetails(_ capture: BuddyCaptureContext) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let screenshot = capture.screenshot {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(nsImage: screenshot.thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 92, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                        )
+                    VStack(alignment: .leading, spacing: 6) {
+                        metadataRow("Image", "\(screenshot.pixelWidth)×\(screenshot.pixelHeight)")
+                        metadataRow("Source", "Buddy Capture")
+                    }
+                }
+            } else {
+                metadataRow("Image", "No screenshot captured")
+            }
+
+            if !capture.question.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Question")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(capture.question)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(4)
+                        .textSelection(.enabled)
+                }
+            }
+
+            metadataRow("Window", capture.windowTitle.isEmpty ? "Unknown" : capture.windowTitle)
+            metadataRow("App", capture.appName)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

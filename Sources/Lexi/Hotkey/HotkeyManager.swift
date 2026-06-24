@@ -18,7 +18,7 @@ final class HotkeyManager {
 
         var eventSpec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
-            eventKind: OSType(kEventHotKeyPressed)
+            eventKind: OSType(kEventHotKeyReleased)
         )
 
         InstallEventHandler(

@@ -12,6 +12,15 @@ Rules:
 - If the passage is empty (no surrounding context was captured), give the most likely intended meaning of the term and keep it brief.
 - Keep the whole response under ~60 words unless the concept truly needs more.`;
 
+// Appended (as a second system block) only for buddy hold-to-ask captures, where
+// the reader pointed at part of their screen and may have asked a spoken question.
+// Mirrors Feature 4 §8 — answer the question about the image, don't narrate pixels.
+export const BUDDY_SYSTEM_PROMPT = `The reader is pointing at part of their screen (an image is provided) and may be asking a
+spoken question (provided as text). Answer THE QUESTION about what they're pointing at,
+in context, honoring the same rules above. If there's no question, explain what the image
+shows and why it matters. Lead with 1–2 sentences. Explain meaning, don't narrate pixels.
+If no image was provided, answer the spoken question about what the reader is looking at.`;
+
 export type ExplainLineage = {
   rootTerm: string;
   rootSourceText: string;
@@ -47,4 +56,34 @@ WINDOW TITLE: ${input.windowTitle}
 APP: ${input.appName}
 
 Explain TERM as it is used in PASSAGE.`;
+}
+
+export type BuddyExplainRequest = {
+  question: string;
+  windowTitle: string;
+  appName: string;
+  hasImage: boolean;
+};
+
+export function buildBuddyUserMessage(input: BuddyExplainRequest): string {
+  const lines: string[] = [];
+  lines.push(input.question ? `SPOKEN QUESTION: ${input.question}` : 'SPOKEN QUESTION: (none — the reader pointed without speaking)');
+  if (input.windowTitle) {
+    lines.push(`WINDOW TITLE: ${input.windowTitle}`);
+  }
+  if (input.appName) {
+    lines.push(`APP: ${input.appName}`);
+  }
+
+  if (input.hasImage) {
+    lines.push(
+      input.question
+        ? '\nAnswer the SPOKEN QUESTION about the attached screenshot region, in context.'
+        : '\nExplain what the attached screenshot region shows and why it matters.',
+    );
+  } else {
+    lines.push('\nAnswer the SPOKEN QUESTION about what the reader is currently looking at.');
+  }
+
+  return lines.join('\n');
 }

@@ -3,7 +3,14 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
 import { performance } from 'node:perf_hooks';
-import { buildUserMessage, ExplainRequest, SYSTEM_PROMPT } from './prompt.js';
+import {
+  buildBuddyUserMessage,
+  BuddyExplainRequest,
+  buildUserMessage,
+  BUDDY_SYSTEM_PROMPT,
+  ExplainRequest,
+  SYSTEM_PROMPT,
+} from './prompt.js';
 
 dotenv.config();
 dotenv.config({ path: '../.env', override: false });
@@ -13,7 +20,15 @@ const host = process.env.HOST ?? (process.env.PORT ? '0.0.0.0' : '127.0.0.1');
 const apiKey = process.env.ANTHROPIC_API_KEY;
 const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 const nestedModel = process.env.ANTHROPIC_NESTED_MODEL ?? model;
+// Buddy (hold-to-ask) sends a screenshot, so it needs a vision-capable model.
+// Defaults to the main model (claude-sonnet-4-6 is vision-capable and strong on
+// charts/diagrams) so we don't hardcode a separate, possibly-stale model string.
+const visionModel = process.env.ANTHROPIC_VISION_MODEL ?? model;
 const proxyToken = process.env.LEXI_PROXY_TOKEN;
+const jsonBodyLimit = process.env.LEXI_JSON_BODY_LIMIT ?? '25mb';
+
+const ALLOWED_IMAGE_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
+type AllowedImageMediaType = (typeof ALLOWED_IMAGE_MEDIA_TYPES)[number];
 
 if (!apiKey) {
   console.warn('ANTHROPIC_API_KEY is not set. /explain will return 500 until it is configured.');
@@ -23,7 +38,16 @@ const anthropic = apiKey ? new Anthropic({ apiKey }) : undefined;
 const app = express();
 
 app.use(cors({ origin: false }));
-app.use(express.json({ limit: '32kb' }));
+// Buddy captures send a downscaled base64 screenshot, so the body can be a few
+// hundred KB. Keep a generous-but-bounded limit to protect memory.
+app.use(express.json({ limit: jsonBodyLimit }));
+app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (numericProperty(error, 'status') === 413 || stringProperty(error, 'type') === 'entity.too.large') {
+    res.status(413).json({ code: 'payload_too_large', error: 'That Buddy Capture image is too large. Try dragging a smaller region.' });
+    return;
+  }
+  next(error);
+});
 app.use((req, res, next) => {
   if (!proxyToken || req.path === '/health') {
     next();
@@ -45,6 +69,8 @@ app.get('/health', (_req, res) => {
     ok: true,
     model,
     nestedModel,
+    visionModel,
+    jsonBodyLimit,
     anthropicApiKeyConfigured: Boolean(apiKey),
     proxyTokenConfigured: Boolean(proxyToken),
   });
@@ -52,11 +78,12 @@ app.get('/health', (_req, res) => {
 
 app.post('/explain', async (req, res) => {
   const requestStartedAt = performance.now();
-  const parsed = parseExplainRequest(req.body);
+  const parsed = parseRequest(req.body);
   if (!parsed.ok) {
     res.status(400).json({ code: 'invalid_request', error: parsed.error });
     return;
   }
+  const request = parsed.request;
 
   if (!anthropic) {
     res.status(500).json({ code: 'assistant_misconfigured', error: 'ANTHROPIC_API_KEY is not configured on the proxy.' });
@@ -73,8 +100,18 @@ app.post('/explain', async (req, res) => {
 
   let firstDeltaAt: number | undefined;
   let outputCharacters = 0;
-  const termForLog = parsed.value.term.slice(0, 60);
-  const requestModel = parsed.value.lineage ? nestedModel : model;
+  const termForLog = (request.kind === 'buddy' ? request.value.question || 'buddy capture' : request.value.term).slice(0, 60);
+  const requestModel = request.kind === 'buddy' ? visionModel : request.value.lineage ? nestedModel : model;
+  const maxTokens = request.kind === 'buddy' ? 240 : request.value.lineage ? 120 : 150;
+  const systemBlocks = request.kind === 'buddy'
+    ? [
+        { type: 'text' as const, text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } },
+        { type: 'text' as const, text: BUDDY_SYSTEM_PROMPT },
+      ]
+    : [{ type: 'text' as const, text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } }];
+  const messageContent = request.kind === 'buddy'
+    ? buildBuddyMessageContent(request)
+    : buildUserMessage(request.value);
 
   sendEvent(res, 'meta', {
     model: requestModel,
@@ -85,19 +122,13 @@ app.post('/explain', async (req, res) => {
     const anthropicStartedAt = performance.now();
     const stream = await anthropic.messages.create({
       model: requestModel,
-      max_tokens: parsed.value.lineage ? 120 : 150,
+      max_tokens: maxTokens,
       temperature: 0.2,
-      system: [
-        {
-          type: 'text',
-          text: SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
+      system: systemBlocks,
       messages: [
         {
           role: 'user',
-          content: buildUserMessage(parsed.value),
+          content: messageContent,
         },
       ],
       stream: true,
@@ -144,6 +175,7 @@ app.listen(port, host, () => {
 });
 
 type ProxyErrorCode =
+  | 'payload_too_large'
   | 'assistant_auth_failed'
   | 'assistant_rate_limited'
   | 'assistant_model_unavailable'
@@ -165,6 +197,10 @@ function classifyAssistantError(error: unknown): ProxyError {
 
   if (status === 404 || rawMessage.includes('model')) {
     return { code: 'assistant_model_unavailable', message: 'The configured assistant model is unavailable. Check ANTHROPIC_MODEL in Railway.' };
+  }
+
+  if (status === 413 || rawMessage.includes('too large')) {
+    return { code: 'payload_too_large', message: 'That Buddy Capture image is too large. Try dragging a smaller region.' };
   }
 
   if (status === 429 || rawMessage.includes('rate')) {
@@ -197,6 +233,90 @@ function stringProperty(value: unknown, key: string): string {
 type ParseResult =
   | { ok: true; value: ExplainRequest }
   | { ok: false; error: string };
+
+type BuddyImage = { mediaType: AllowedImageMediaType; data: string };
+
+type ParsedRequest =
+  | { kind: 'text'; value: ExplainRequest }
+  | { kind: 'buddy'; value: BuddyExplainRequest; image?: BuddyImage };
+
+type RequestParseResult =
+  | { ok: true; request: ParsedRequest }
+  | { ok: false; error: string };
+
+function parseRequest(body: unknown): RequestParseResult {
+  if (!body || typeof body !== 'object') {
+    return { ok: false, error: 'Expected JSON object.' };
+  }
+
+  if (stringField((body as Record<string, unknown>).mode) === 'buddy') {
+    return parseBuddyRequest(body as Record<string, unknown>);
+  }
+
+  const textParse = parseExplainRequest(body);
+  if (!textParse.ok) {
+    return { ok: false, error: textParse.error };
+  }
+  return { ok: true, request: { kind: 'text', value: textParse.value } };
+}
+
+function parseBuddyRequest(value: Record<string, unknown>): RequestParseResult {
+  const question = stringField(value.question).slice(0, 600);
+  const windowTitle = stringField(value.windowTitle).slice(0, 240);
+  const appName = stringField(value.appName).slice(0, 120);
+  const image = parseImage(value.image, value.imageMediaType);
+
+  if (!image && !question) {
+    return { ok: false, error: 'A buddy capture needs an image, a spoken question, or both.' };
+  }
+
+  return {
+    ok: true,
+    request: {
+      kind: 'buddy',
+      value: { question, windowTitle, appName, hasImage: Boolean(image) },
+      ...(image ? { image } : {}),
+    },
+  };
+}
+
+function parseImage(rawData: unknown, rawMediaType: unknown): BuddyImage | undefined {
+  const raw = stringField(rawData);
+  if (!raw) {
+    return undefined;
+  }
+
+  // Accept either a bare base64 string or a full data URL.
+  let base64 = raw;
+  let mediaType = stringField(rawMediaType);
+  const dataUrlMatch = /^data:(.+?);base64,(.*)$/s.exec(raw);
+  if (dataUrlMatch) {
+    mediaType = mediaType || dataUrlMatch[1];
+    base64 = dataUrlMatch[2];
+  }
+
+  if (!base64) {
+    return undefined;
+  }
+
+  const resolvedMediaType: AllowedImageMediaType = (ALLOWED_IMAGE_MEDIA_TYPES as readonly string[]).includes(mediaType)
+    ? (mediaType as AllowedImageMediaType)
+    : 'image/jpeg';
+
+  return { mediaType: resolvedMediaType, data: base64 };
+}
+
+function buildBuddyMessageContent(request: { value: BuddyExplainRequest; image?: BuddyImage }): Anthropic.ContentBlockParam[] {
+  const blocks: Anthropic.ContentBlockParam[] = [];
+  if (request.image) {
+    blocks.push({
+      type: 'image',
+      source: { type: 'base64', media_type: request.image.mediaType, data: request.image.data },
+    });
+  }
+  blocks.push({ type: 'text', text: buildBuddyUserMessage(request.value) });
+  return blocks;
+}
 
 function parseExplainRequest(body: unknown): ParseResult {
   if (!body || typeof body !== 'object') {

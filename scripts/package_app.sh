@@ -72,6 +72,12 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Jeremy Rodden. All rights reserved.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Lexi uses the microphone to transcribe your Buddy Capture question after you release Option-Command.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Lexi captures the screen region you drag during Buddy Capture so it can explain what you are pointing at.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Lexi uses Speech Recognition to transcribe your Buddy Capture question on device.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

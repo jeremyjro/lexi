@@ -8,6 +8,9 @@ struct ExplainErrorResponse: Decodable {
 struct ProxyHealth: Decodable {
     let ok: Bool
     let model: String
+    let nestedModel: String?
+    let visionModel: String?
+    let jsonBodyLimit: String?
     let anthropicApiKeyConfigured: Bool?
     let proxyTokenConfigured: Bool?
 }
@@ -67,6 +70,31 @@ final class ExplainClient {
         )
     }
 
+    func explainBuddy(
+        imageBase64: String?,
+        imageMediaType: String,
+        question: String,
+        appName: String,
+        windowTitle: String,
+        onDelta: @escaping @MainActor (String, String) -> Void,
+        onTiming: @escaping @MainActor (ProxyTiming) -> Void
+    ) async throws -> String {
+        let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard imageBase64 != nil || !trimmedQuestion.isEmpty else {
+            throw ExplainClientError.invalidResponse
+        }
+
+        let payload = ExplainPayload(
+            buddyImage: imageBase64,
+            imageMediaType: imageBase64 == nil ? nil : imageMediaType,
+            question: trimmedQuestion,
+            windowTitle: windowTitle,
+            appName: appName
+        )
+
+        return try await performExplain(payload: payload, onDelta: onDelta, onTiming: onTiming)
+    }
+
     func explainNested(
         term: String,
         in stack: LookupNavigationStack,
@@ -105,6 +133,9 @@ final class ExplainClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyProxyAuthorization(to: &request)
         request.httpBody = try JSONEncoder().encode(payload)
+        if let count = request.httpBody?.count {
+            print("Lexi /explain request bytes: \(count)")
+        }
 
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
@@ -194,6 +225,12 @@ private struct ExplainPayload: Encodable {
     let windowTitle: String
     let appName: String
     let lineage: ExplainLineagePayload?
+    // Buddy (hold-to-ask) fields. Optional, so the synthesized encoder omits them
+    // for the text and nested paths — leaving those requests byte-for-byte unchanged.
+    let mode: String?
+    let image: String?
+    let imageMediaType: String?
+    let question: String?
 
     init(capture: CapturedSelection) {
         term = capture.term
@@ -201,6 +238,10 @@ private struct ExplainPayload: Encodable {
         windowTitle = capture.windowTitle
         appName = capture.appName
         lineage = nil
+        mode = nil
+        image = nil
+        imageMediaType = nil
+        question = nil
     }
 
     init(term: String, passage: String, windowTitle: String, appName: String, lineage: ExplainLineagePayload?) {
@@ -209,6 +250,22 @@ private struct ExplainPayload: Encodable {
         self.windowTitle = windowTitle
         self.appName = appName
         self.lineage = lineage
+        mode = nil
+        image = nil
+        imageMediaType = nil
+        question = nil
+    }
+
+    init(buddyImage: String?, imageMediaType: String?, question: String, windowTitle: String, appName: String) {
+        term = ""
+        passage = ""
+        self.windowTitle = windowTitle
+        self.appName = appName
+        lineage = nil
+        mode = "buddy"
+        image = buddyImage
+        self.imageMediaType = imageMediaType
+        self.question = question
     }
 }
 
@@ -311,6 +368,8 @@ enum ExplainClientError: LocalizedError {
             return "Lexi proxy rejected the request. Check the proxy token in Settings."
         case 404:
             return "Lexi proxy endpoint was not found. Check the proxy URL in Settings."
+        case 413:
+            return "That Buddy Capture screenshot was too large to send. Try dragging a smaller region."
         case 429:
             return "Lexi proxy is rate limited. Try again shortly."
         case 500...599:
@@ -326,6 +385,8 @@ enum ExplainClientError: LocalizedError {
             return "Lexi proxy rejected the request. Check the proxy token in Settings."
         case "invalid_request":
             return "Lexi could not send this selection. Try selecting a shorter phrase."
+        case "payload_too_large":
+            return "That Buddy Capture screenshot was too large to send. Try dragging a smaller region."
         case "assistant_misconfigured":
             return "The assistant backend is missing its Anthropic API key. Check Railway variables."
         case "assistant_auth_failed":

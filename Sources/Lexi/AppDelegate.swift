@@ -2,18 +2,18 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var permissionOnboarding: PermissionOnboardingWindowController?
     private let hotkeyManager = HotkeyManager()
     private let selectionCapture = SelectionCapture()
     private let rawCapturePanel = RawCapturePanelController()
+    private var buddyCoordinator: BuddyCaptureCoordinator?
     private var settingsWindow: SettingsWindowController?
     private var explainTask: Task<Void, Never>?
     private var lastAnswer: String?
-    private var legacyModifierMonitor: Any?
     private var isEnabled = true
-    private var isOptionCommandHeld = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -24,6 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rawCapturePanel.onNestedLookupRequested = { [weak self] term, stack in
             self?.requestNestedExplanation(term: term, stack: stack)
         }
+        setupBuddyCapture()
 
         requestAccessibilityPermission()
         let isTrusted = AXIsProcessTrusted()
@@ -35,7 +36,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         setupGlobalHotkey()
+        showSettings()
         print("Lexi started successfully")
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showSettings()
+        return true
     }
 
     private func installStatusItem() {
@@ -62,7 +69,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyItem.target = self
         menu.addItem(hotkeyItem)
 
-        let permissionItem = NSMenuItem(title: "Re-check Accessibility Permission", action: #selector(recheckPermission), keyEquivalent: "")
+        let buddyItem = NSMenuItem(title: "Start Buddy Capture", action: #selector(startBuddyCaptureFromMenu), keyEquivalent: "")
+        buddyItem.target = self
+        buddyItem.isEnabled = isEnabled
+        menu.addItem(buddyItem)
+
+        let permissionItem = NSMenuItem(title: "Re-check Permissions", action: #selector(recheckPermission), keyEquivalent: "")
         permissionItem.target = self
         menu.addItem(permissionItem)
 
@@ -101,6 +113,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isEnabled.toggle()
         if !isEnabled {
             explainTask?.cancel()
+            buddyCoordinator?.cancelActiveCapture()
             rawCapturePanel.hide()
         }
         rebuildMenu()
@@ -108,7 +121,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showSettings() {
         if settingsWindow == nil {
-            settingsWindow = SettingsWindowController()
+            settingsWindow = SettingsWindowController(onStartBuddyCapture: { [weak self] in
+                self?.startBuddyCapture()
+            })
         }
         settingsWindow?.showWindow(nil)
         settingsWindow?.window?.orderFrontRegardless()
@@ -118,13 +133,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showHotkeyInfo() {
         showAlert(
             title: "Lexi hotkeys",
-            message: "Option + Space is the default lookup hotkey. Option + Command is still available as a fallback during local testing."
+            message: "Hold Option + Space, then release to explain highlighted text. Hold Option + Command, then release to enter Buddy Capture; drag a screen region, and releasing the trackpad/mouse sends the screenshot and spoken question. Inside a Lexi answer, highlight a word or phrase, then use → to drill down or reopen the latest child. Use ← to pop up and Esc to close."
         )
     }
 
+    func startBuddyCapture() {
+        guard let buddyCoordinator else {
+            rawCapturePanel.show(status: .buddyError(nil, "Buddy Capture is not initialized. Quit and reopen Lexi."), anchorRect: nil)
+            return
+        }
+        rawCapturePanel.show(
+            status: .buddyMessage(
+                title: "Buddy Capture starting",
+                message: "A full-screen capture overlay should appear now. Drag a region and release to submit."
+            ),
+            anchorRect: nil
+        )
+        buddyCoordinator.beginCaptureFromUI()
+    }
+
+    @objc private func startBuddyCaptureFromMenu() {
+        startBuddyCapture()
+    }
+
     @objc private func recheckPermission() {
-        if AXIsProcessTrusted() {
-            showAlert(title: "Accessibility permission is enabled")
+        if BuddyPermissions.allGranted {
+            showAlert(title: "Lexi permissions are enabled")
         } else {
             requestAccessibilityPermission()
             showPermissionOnboarding()
@@ -142,7 +176,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     let backendTokenStatus = health.proxyTokenConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                     self.showAlert(
                         title: health.ok ? "Lexi proxy is online" : "Lexi proxy responded unexpectedly",
-                        message: "URL: \(client.baseURLDescription)\nModel: \(health.model)\nLocal token configured: \(client.hasProxyToken ? "Yes" : "No")\nBackend key configured: \(backendKeyStatus)\nBackend token configured: \(backendTokenStatus)"
+                        message: "URL: \(client.baseURLDescription)\nModel: \(health.model)\nVision model: \(health.visionModel ?? health.model)\nLocal token configured: \(client.hasProxyToken ? "Yes" : "No")\nBackend key configured: \(backendKeyStatus)\nBackend token configured: \(backendTokenStatus)"
                     )
                 }
             } catch {
@@ -171,15 +205,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager.registerOptionSpace { [weak self] in
             self?.handleLookupHotkey()
         }
-        installLegacyOptionCommandFallback()
-        print("Option+Space hotkey registered")
-        print("Option+Command legacy fallback registered")
+        print("Option+Space explain-term release hotkey registered")
     }
 
-    private func installLegacyOptionCommandFallback() {
-        legacyModifierMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.handleModifierKeys(event: event)
+    private func setupBuddyCapture() {
+        let coordinator = BuddyCaptureCoordinator()
+        coordinator.isEnabledProvider = { [weak self] in
+            self?.isEnabled == true
         }
+        coordinator.onCaptureReady = { [weak self] capture in
+            self?.requestBuddyExplanation(for: capture)
+        }
+        coordinator.onPermissionsMissing = { [weak self] permissions in
+            guard let self else { return }
+            self.showPermissionOnboarding()
+            self.rawCapturePanel.show(status: .buddyPermissionMissing(permissions), anchorRect: nil)
+        }
+        coordinator.onError = { [weak self] message in
+            self?.rawCapturePanel.show(status: .buddyError(nil, message), anchorRect: nil)
+        }
+        coordinator.onInstallFailed = { [weak self] in
+            guard let self else { return }
+            self.showPermissionOnboarding()
+            self.rawCapturePanel.show(status: .buddyPermissionMissing([.accessibility]), anchorRect: nil)
+        }
+        coordinator.start()
+        buddyCoordinator = coordinator
+        print("Option+Command Buddy Capture release monitor registered")
     }
 
     private func handleLookupHotkey() {
@@ -187,13 +239,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard isEnabled else { return }
 
         if rawCapturePanel.isVisible {
-            if let selectedText = rawCapturePanel.selectedAnswerText,
+            let selectedText = rawCapturePanel.selectedAnswerText
+            print("Panel visible, selected text: \(selectedText ?? "nil")")
+            if let selectedText,
                rawCapturePanel.requestNestedLookup(term: selectedText) {
                 lastAnswer = rawCapturePanel.currentAnswer
                 rebuildMenu()
+                print("Nested lookup requested for: \(selectedText)")
             } else {
                 explainTask?.cancel()
                 rawCapturePanel.hide()
+                print("No selection or request failed, hiding panel")
             }
             return
         }
@@ -214,6 +270,62 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("Capture failed: Accessibility permission missing")
             showPermissionOnboarding()
             rawCapturePanel.show(status: .noPermission, anchorRect: nil)
+        }
+    }
+
+    private func requestBuddyExplanation(for capture: BuddyCaptureContext) {
+        explainTask?.cancel()
+        rawCapturePanel.show(status: .buddyLoading(capture), anchorRect: capture.anchorRect)
+
+        explainTask = Task { [weak self] in
+            guard let self else { return }
+            var didLogFirstToken = false
+
+            do {
+                let requestStartedAt = currentMilliseconds()
+                let client = ExplainClient()
+                let answer = try await client.explainBuddy(
+                    imageBase64: capture.screenshot?.base64Data,
+                    imageMediaType: capture.screenshot?.mediaType ?? RegionScreenshotCapture.mediaType,
+                    question: capture.question,
+                    appName: capture.appName,
+                    windowTitle: capture.windowTitle,
+                    onDelta: { [weak self] _, accumulated in
+                        guard let self else { return }
+                        if !didLogFirstToken {
+                            didLogFirstToken = true
+                            let networkTtftMs = Int(self.currentMilliseconds() - requestStartedAt)
+                            print("Lexi Buddy Capture latency: firstVisibleToken=\(networkTtftMs)ms")
+                        }
+                        self.rawCapturePanel.update(status: .buddyStreaming(capture, accumulated))
+                    },
+                    onTiming: { timing in
+                        if let proxyTtftMs = timing.proxyTtftMs, let anthropicTtftMs = timing.anthropicTtftMs {
+                            print("Lexi Buddy proxy timing: proxyTtft=\(proxyTtftMs)ms anthropicTtft=\(anthropicTtftMs)ms")
+                        }
+                    }
+                )
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    let stack = LookupNavigationStack(
+                        rootTerm: capture.displayTitle,
+                        sourceText: capture.sourceText,
+                        answer: answer,
+                        appName: capture.appName,
+                        windowTitle: capture.windowTitle,
+                        sourceLabel: "Buddy Capture"
+                    )
+                    self.lastAnswer = answer
+                    self.rawCapturePanel.update(status: .lookup(stack))
+                    self.rebuildMenu()
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                let message = error.localizedDescription.isEmpty ? "Couldn't explain that Buddy Capture — try again." : error.localizedDescription
+                await MainActor.run {
+                    self.rawCapturePanel.update(status: .buddyError(capture, message))
+                }
+            }
         }
     }
 
@@ -298,21 +410,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.rawCapturePanel.update(status: .error(capture, message))
                 }
             }
-        }
-    }
-
-    private func handleModifierKeys(event: NSEvent) {
-        let optionHeld = event.modifierFlags.contains(.option)
-        let commandHeld = event.modifierFlags.contains(.command)
-        let bothHeld = optionHeld && commandHeld
-
-        if bothHeld && !isOptionCommandHeld {
-            isOptionCommandHeld = true
-            print("Option+Command armed; capture will run on release")
-        } else if !bothHeld && isOptionCommandHeld {
-            isOptionCommandHeld = false
-            print("Option+Command released; running capture")
-            handleLookupHotkey()
         }
     }
 

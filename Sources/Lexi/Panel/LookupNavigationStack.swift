@@ -13,6 +13,7 @@ struct LookupNode: Identifiable, Equatable {
 
 struct LookupNavigationStack: Equatable {
     private(set) var nodesById: [UUID: LookupNode]
+    private(set) var childIdsByParentId: [UUID: [UUID]]
     let rootId: UUID
     private(set) var currentId: UUID
 
@@ -28,6 +29,7 @@ struct LookupNavigationStack: Equatable {
             sourceLabel: sourceLabel
         )
         nodesById = [root.id: root]
+        childIdsByParentId = [:]
         rootId = root.id
         currentId = root.id
     }
@@ -69,6 +71,7 @@ struct LookupNavigationStack: Equatable {
             sourceLabel: "Lexi answer"
         )
         nodesById[child.id] = child
+        childIdsByParentId[parent.id, default: []].append(child.id)
         currentId = child.id
         return child.id
     }
@@ -82,6 +85,13 @@ struct LookupNavigationStack: Equatable {
     mutating func pop() -> Bool {
         guard let parentId = currentNode?.parentId else { return false }
         currentId = parentId
+        return true
+    }
+
+    mutating func jumpToLatestChild() -> Bool {
+        guard let latestChildId = childIdsByParentId[currentId]?.last,
+              nodesById[latestChildId] != nil else { return false }
+        currentId = latestChildId
         return true
     }
 
