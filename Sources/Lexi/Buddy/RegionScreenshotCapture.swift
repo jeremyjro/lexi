@@ -8,6 +8,9 @@ struct RegionScreenshot {
     let thumbnail: NSImage
     let pixelWidth: Int
     let pixelHeight: Int
+    let encodedBytes: Int
+    let recognizedText: String
+    let sourceRect: CGRect?
 }
 
 enum RegionScreenshotError: LocalizedError {
@@ -31,12 +34,12 @@ enum RegionScreenshotError: LocalizedError {
 /// to Retina backing scale and multi-monitor origins — and downscales before send.
 @MainActor
 enum RegionScreenshotCapture {
-    static let maxLongestEdge = 900
+    static let maxLongestEdge = 1400
     static let minRegionSize: CGFloat = 8
     nonisolated static let mediaType = "image/jpeg"
-    private static let maxEncodedBytes = 18_000
-    private static let fallbackMaxEdges = [900, 720, 560, 420, 320, 240, 180, 140]
-    private static let compressionFactors: [CGFloat] = [0.54, 0.4, 0.28, 0.2, 0.14]
+    private static let hardMaxEncodedBytes = 1_800_000
+    private static let fallbackMaxEdges = [1400, 1280, 1100, 900, 720, 560, 420, 320]
+    private static let compressionFactors: [CGFloat] = [0.82, 0.7, 0.58, 0.46, 0.34, 0.24]
 
     /// `regionInScreenCoordinates` is an AppKit global rect (bottom-left origin),
     /// as produced by the overlay's rubber-band selection.
@@ -69,7 +72,7 @@ enum RegionScreenshotCapture {
             throw RegionScreenshotError.emptyRegion
         }
 
-        return try encode(downscale(cropped, maxEdge: maxLongestEdge))
+        return try encode(downscale(cropped, maxEdge: maxLongestEdge), sourceRect: regionInScreenCoordinates)
     }
 
     /// Fallback for "spoke but drew no region": grab the frontmost window so the
@@ -94,7 +97,15 @@ enum RegionScreenshotCapture {
         configuration.showsCursor = false
 
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        return try encode(downscale(image, maxEdge: maxLongestEdge))
+        return try encode(downscale(image, maxEdge: maxLongestEdge), sourceRect: window.frame)
+    }
+
+    static func captureCursorScreen() async throws -> RegionScreenshot? {
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main else {
+            return nil
+        }
+        let image = try await captureDisplay(for: screen)
+        return try encode(downscale(image, maxEdge: maxLongestEdge), sourceRect: screen.frame)
     }
 
     // MARK: - Capture
@@ -147,9 +158,10 @@ enum RegionScreenshotCapture {
         return context.makeImage() ?? image
     }
 
-    private static func encode(_ image: CGImage) throws -> RegionScreenshot {
+    private static func encode(_ image: CGImage, sourceRect: CGRect?) throws -> RegionScreenshot {
         var bestImage = image
         var bestData: Data?
+        let targetBytes = targetEncodedBytes(for: image)
 
         for maxEdge in fallbackMaxEdges {
             let candidateImage = downscale(image, maxEdge: maxEdge)
@@ -158,10 +170,12 @@ enum RegionScreenshotCapture {
                 guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: compressionFactor]) else {
                     continue
                 }
-                bestImage = candidateImage
-                bestData = data
-                if data.count <= maxEncodedBytes {
-                    return screenshot(image: candidateImage, data: data)
+                if bestData == nil || data.count < bestData!.count || data.count <= targetBytes {
+                    bestImage = candidateImage
+                    bestData = data
+                }
+                if data.count <= targetBytes {
+                    return screenshot(image: candidateImage, data: data, sourceRect: sourceRect)
                 }
             }
         }
@@ -169,17 +183,32 @@ enum RegionScreenshotCapture {
         guard let bestData else {
             throw RegionScreenshotError.encodeFailed
         }
-        return screenshot(image: bestImage, data: bestData)
+        if bestData.count > hardMaxEncodedBytes {
+            throw RegionScreenshotError.encodeFailed
+        }
+        return screenshot(image: bestImage, data: bestData, sourceRect: sourceRect)
     }
 
-    private static func screenshot(image: CGImage, data: Data) -> RegionScreenshot {
+    private static func targetEncodedBytes(for image: CGImage) -> Int {
+        let pixels = image.width * image.height
+        if pixels <= 250_000 { return 350_000 }
+        if pixels <= 1_000_000 { return 700_000 }
+        return 1_200_000
+    }
+
+    private static func screenshot(image: CGImage, data: Data, sourceRect: CGRect?) -> RegionScreenshot {
+        let recognizedText = BuddyTextRecognizer.recognizeText(in: image)
+        LexiDiagnostics.recordBuddyImage(bytes: data.count, width: image.width, height: image.height, ocrCharacters: recognizedText.count)
         let thumbnail = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
         return RegionScreenshot(
             base64Data: data.base64EncodedString(),
             mediaType: mediaType,
             thumbnail: thumbnail,
             pixelWidth: image.width,
-            pixelHeight: image.height
+            pixelHeight: image.height,
+            encodedBytes: data.count,
+            recognizedText: recognizedText,
+            sourceRect: sourceRect
         )
     }
 

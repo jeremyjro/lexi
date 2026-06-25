@@ -5,7 +5,9 @@ import express from 'express';
 import { performance } from 'node:perf_hooks';
 import {
   buildBuddyUserMessage,
+  buildFollowUpUserMessage,
   BuddyExplainRequest,
+  FollowUpExplainRequest,
   buildUserMessage,
   BUDDY_SYSTEM_PROMPT,
   ExplainRequest,
@@ -26,6 +28,14 @@ const nestedModel = process.env.ANTHROPIC_NESTED_MODEL ?? model;
 const visionModel = process.env.ANTHROPIC_VISION_MODEL ?? model;
 const proxyToken = process.env.LEXI_PROXY_TOKEN;
 const jsonBodyLimit = process.env.LEXI_JSON_BODY_LIMIT ?? '25mb';
+const assemblyAIApiKey = process.env.ASSEMBLYAI_API_KEY;
+const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+const elevenLabsVoiceId = process.env.ELEVENLABS_VOICE_ID;
+const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
+const researchProvider = process.env.LEXI_RESEARCH_PROVIDER ?? (perplexityApiKey ? 'perplexity' : 'none');
+const researchMode = process.env.LEXI_RESEARCH_MODE ?? 'auto';
+const perplexityModel = process.env.PERPLEXITY_MODEL ?? 'sonar-pro';
+const perplexityEndpoint = process.env.PERPLEXITY_ENDPOINT ?? 'https://api.perplexity.ai/v1/sonar';
 
 const ALLOWED_IMAGE_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
 type AllowedImageMediaType = (typeof ALLOWED_IMAGE_MEDIA_TYPES)[number];
@@ -73,7 +83,69 @@ app.get('/health', (_req, res) => {
     jsonBodyLimit,
     anthropicApiKeyConfigured: Boolean(apiKey),
     proxyTokenConfigured: Boolean(proxyToken),
+    assemblyAIConfigured: Boolean(assemblyAIApiKey),
+    elevenLabsConfigured: Boolean(elevenLabsApiKey && elevenLabsVoiceId),
+    perplexityConfigured: Boolean(perplexityApiKey),
+    researchProvider,
+    researchMode,
+    perplexityModel,
   });
+});
+
+app.post('/transcribe-token', async (_req, res) => {
+  if (!assemblyAIApiKey) {
+    res.status(500).json({ code: 'assemblyai_misconfigured', error: 'ASSEMBLYAI_API_KEY is not configured on the proxy.' });
+    return;
+  }
+
+  const response = await fetch('https://streaming.assemblyai.com/v3/token?expires_in_seconds=60&max_session_duration_seconds=600', {
+    method: 'GET',
+    headers: { authorization: assemblyAIApiKey },
+  });
+  const body = await response.text();
+  res.status(response.status).type('application/json').send(body);
+});
+
+app.post('/tts', async (req, res) => {
+  if (!elevenLabsApiKey || !elevenLabsVoiceId) {
+    res.status(500).json({ code: 'tts_misconfigured', error: 'ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID are not configured on the proxy.' });
+    return;
+  }
+
+  const text = stringField((req.body as Record<string, unknown>)?.text).slice(0, 2400);
+  if (!text) {
+    res.status(400).json({ code: 'invalid_request', error: 'text is required.' });
+    return;
+  }
+
+  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenLabsVoiceId}`, {
+    method: 'POST',
+    headers: {
+      'xi-api-key': elevenLabsApiKey,
+      'content-type': 'application/json',
+      accept: 'audio/mpeg',
+    },
+    body: JSON.stringify({
+      text,
+      model_id: stringField((req.body as Record<string, unknown>)?.model_id) || 'eleven_flash_v2_5',
+      voice_settings: (req.body as Record<string, unknown>)?.voice_settings ?? { stability: 0.5, similarity_boost: 0.75 },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    res.status(response.status).type('application/json').send(body);
+    return;
+  }
+
+  res.status(response.status);
+  res.setHeader('content-type', response.headers.get('content-type') ?? 'audio/mpeg');
+  if (response.body) {
+    for await (const chunk of response.body) {
+      res.write(chunk);
+    }
+  }
+  res.end();
 });
 
 app.post('/explain', async (req, res) => {
@@ -100,22 +172,27 @@ app.post('/explain', async (req, res) => {
 
   let firstDeltaAt: number | undefined;
   let outputCharacters = 0;
-  const termForLog = (request.kind === 'buddy' ? request.value.question || 'buddy capture' : request.value.term).slice(0, 60);
-  const requestModel = request.kind === 'buddy' ? visionModel : request.value.lineage ? nestedModel : model;
-  const maxTokens = request.kind === 'buddy' ? 240 : request.value.lineage ? 120 : 150;
+  const termForLog = requestLabel(request).slice(0, 60);
+  const requestModel = request.kind === 'buddy'
+    ? visionModel
+    : request.kind === 'followup' || (request.kind === 'text' && request.value.lineage)
+      ? nestedModel
+      : model;
+  const maxTokens = request.kind === 'buddy' ? 800 : request.kind === 'followup' ? 600 : request.kind === 'text' && request.value.lineage ? 480 : 700;
   const systemBlocks = request.kind === 'buddy'
     ? [
         { type: 'text' as const, text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } },
         { type: 'text' as const, text: BUDDY_SYSTEM_PROMPT },
       ]
     : [{ type: 'text' as const, text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } }];
-  const messageContent = request.kind === 'buddy'
-    ? buildBuddyMessageContent(request)
-    : buildUserMessage(request.value);
+  const research = await maybeResearch(request);
+  const messageContent = buildMessageContent(request, research);
 
   sendEvent(res, 'meta', {
     model: requestModel,
     proxyAcceptedMs: elapsedMs(requestStartedAt),
+    researchProvider: research?.provider,
+    researchUsed: Boolean(research),
   });
 
   try {
@@ -238,7 +315,13 @@ type BuddyImage = { mediaType: AllowedImageMediaType; data: string };
 
 type ParsedRequest =
   | { kind: 'text'; value: ExplainRequest }
+  | { kind: 'followup'; value: FollowUpExplainRequest }
   | { kind: 'buddy'; value: BuddyExplainRequest; image?: BuddyImage };
+
+type ResearchResult = {
+  provider: 'perplexity';
+  context: string;
+};
 
 type RequestParseResult =
   | { ok: true; request: ParsedRequest }
@@ -249,8 +332,12 @@ function parseRequest(body: unknown): RequestParseResult {
     return { ok: false, error: 'Expected JSON object.' };
   }
 
-  if (stringField((body as Record<string, unknown>).mode) === 'buddy') {
+  const mode = stringField((body as Record<string, unknown>).mode);
+  if (mode === 'buddy') {
     return parseBuddyRequest(body as Record<string, unknown>);
+  }
+  if (mode === 'followup') {
+    return parseFollowUpRequest(body as Record<string, unknown>);
   }
 
   const textParse = parseExplainRequest(body);
@@ -260,10 +347,42 @@ function parseRequest(body: unknown): RequestParseResult {
   return { ok: true, request: { kind: 'text', value: textParse.value } };
 }
 
+function parseFollowUpRequest(value: Record<string, unknown>): RequestParseResult {
+  const question = stringField(value.question).slice(0, 600);
+  const windowTitle = stringField(value.windowTitle).slice(0, 240);
+  const appName = stringField(value.appName).slice(0, 120);
+  const sessionContext = stringField(value.sessionContext).slice(0, 1600);
+  const lineage = parseLineage(value.lineage);
+
+  if (!question || !lineage) {
+    return { ok: false, error: 'A follow-up needs a question and parent answer context.' };
+  }
+
+  return {
+    ok: true,
+    request: {
+      kind: 'followup',
+      value: {
+        question,
+        rootTerm: lineage.rootTerm,
+        rootSourceText: lineage.rootSourceText,
+        parentTerm: lineage.parentTerm,
+        parentAnswer: lineage.parentAnswer,
+        depth: lineage.depth,
+        windowTitle,
+        appName,
+        ...(sessionContext ? { sessionContext } : {}),
+      },
+    },
+  };
+}
+
 function parseBuddyRequest(value: Record<string, unknown>): RequestParseResult {
   const question = stringField(value.question).slice(0, 600);
   const windowTitle = stringField(value.windowTitle).slice(0, 240);
   const appName = stringField(value.appName).slice(0, 120);
+  const ocrText = stringField(value.ocrText).slice(0, 2400);
+  const sessionContext = stringField(value.sessionContext).slice(0, 1600);
   const image = parseImage(value.image, value.imageMediaType);
 
   if (!image && !question) {
@@ -274,7 +393,14 @@ function parseBuddyRequest(value: Record<string, unknown>): RequestParseResult {
     ok: true,
     request: {
       kind: 'buddy',
-      value: { question, windowTitle, appName, hasImage: Boolean(image) },
+      value: {
+        question,
+        windowTitle,
+        appName,
+        hasImage: Boolean(image),
+        ...(ocrText ? { ocrText } : {}),
+        ...(sessionContext ? { sessionContext } : {}),
+      },
       ...(image ? { image } : {}),
     },
   };
@@ -306,6 +432,123 @@ function parseImage(rawData: unknown, rawMediaType: unknown): BuddyImage | undef
   return { mediaType: resolvedMediaType, data: base64 };
 }
 
+async function maybeResearch(request: ParsedRequest): Promise<ResearchResult | undefined> {
+  if (!shouldUseResearch(request)) {
+    return undefined;
+  }
+
+  const query = buildResearchQuery(request.value);
+  const startedAt = performance.now();
+  try {
+    const response = await fetch(perplexityEndpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${perplexityApiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: perplexityModel,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are Lexi Research, a source-grounded research agent. Find exact definitions, current facts, names, organizations, products, and niche terms. Prefer authoritative or primary sources. If the term is ambiguous, say so and separate meanings.',
+          },
+          { role: 'user', content: query },
+        ],
+        max_tokens: 900,
+        temperature: 0.1,
+        search_mode: 'web',
+        return_related_questions: false,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn(`Lexi research skipped: Perplexity returned HTTP ${response.status}`);
+      return undefined;
+    }
+
+    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }>; citations?: unknown };
+    const content = stringField(payload.choices?.[0]?.message?.content).slice(0, 4200);
+    if (!content) {
+      return undefined;
+    }
+    const citations = Array.isArray(payload.citations)
+      ? payload.citations.map((citation) => stringField(citation)).filter(Boolean).slice(0, 8)
+      : [];
+    const context = [
+      `Provider: Perplexity ${perplexityModel}`,
+      `Research answer:\n${content}`,
+      citations.length ? `Sources:\n${citations.map((citation, index) => `${index + 1}. ${citation}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n\n').slice(0, 5200);
+    console.log(`Lexi research done term="${requestLabel(request).slice(0, 60)}" provider=perplexity ms=${elapsedMs(startedAt)}`);
+    return { provider: 'perplexity', context };
+  } catch (error) {
+    console.warn('Lexi research skipped: Perplexity request failed', error);
+    return undefined;
+  }
+}
+
+function shouldUseResearch(request: ParsedRequest): request is { kind: 'text'; value: ExplainRequest } {
+  if (researchMode === 'off' || researchProvider !== 'perplexity' || !perplexityApiKey) {
+    return false;
+  }
+  if (request.kind !== 'text' || request.value.lineage) {
+    return false;
+  }
+  if (researchMode === 'always') {
+    return true;
+  }
+
+  const term = request.value.term.trim();
+  if (!term) {
+    return false;
+  }
+  if (request.value.question || !request.value.passage) {
+    return true;
+  }
+  if (/[-/0-9]/.test(term) || /\s/.test(term)) {
+    return true;
+  }
+  if (/^[A-Z0-9]{2,}$/.test(term) || /[A-Z]/.test(term.slice(1))) {
+    return true;
+  }
+  return term.length > 14;
+}
+
+function buildResearchQuery(input: ExplainRequest): string {
+  return `Research the highlighted term for Lexi. Return source-grounded facts that help answer accurately.
+
+TERM: ${input.term}
+PASSAGE: ${input.passage || '(none)'}
+WINDOW TITLE: ${input.windowTitle || '(unknown)'}
+APP: ${input.appName || '(unknown)'}
+READER QUESTION: ${input.question || '(none)'}
+
+Focus on exact definition, specific entity/name identification, current factual context, and ambiguity. Keep it concise but cite/source the claims.`;
+}
+
+function requestLabel(request: ParsedRequest): string {
+  switch (request.kind) {
+    case 'buddy':
+      return request.value.question || 'buddy capture';
+    case 'followup':
+      return request.value.question;
+    case 'text':
+      return request.value.term;
+  }
+}
+
+function buildMessageContent(request: ParsedRequest, research?: ResearchResult): Anthropic.ContentBlockParam[] | string {
+  switch (request.kind) {
+    case 'buddy':
+      return buildBuddyMessageContent(request);
+    case 'followup':
+      return buildFollowUpUserMessage(request.value);
+    case 'text':
+      return buildUserMessage({ ...request.value, ...(research ? { researchContext: research.context } : {}) });
+  }
+}
+
 function buildBuddyMessageContent(request: { value: BuddyExplainRequest; image?: BuddyImage }): Anthropic.ContentBlockParam[] {
   const blocks: Anthropic.ContentBlockParam[] = [];
   if (request.image) {
@@ -328,6 +571,8 @@ function parseExplainRequest(body: unknown): ParseResult {
   const passage = stringField(value.passage).slice(0, 1200);
   const windowTitle = stringField(value.windowTitle).slice(0, 240);
   const appName = stringField(value.appName).slice(0, 120);
+  const question = stringField(value.question).slice(0, 600);
+  const sessionContext = stringField(value.sessionContext).slice(0, 1600);
   const lineage = parseLineage(value.lineage);
 
   if (!term) {
@@ -341,6 +586,8 @@ function parseExplainRequest(body: unknown): ParseResult {
       passage,
       windowTitle,
       appName,
+      ...(question ? { question } : {}),
+      ...(sessionContext ? { sessionContext } : {}),
       ...(lineage ? { lineage } : {}),
     },
   };

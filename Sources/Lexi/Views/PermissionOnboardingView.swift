@@ -41,9 +41,9 @@ struct PermissionOnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Label("Hold Option + Space, then release to explain highlighted text", systemImage: "text.cursor")
-                Label("Hold Option + Command, then release to enter Buddy Capture", systemImage: "cursorarrow.motionlines")
-                Label("Drag a region; release to send the screenshot and question", systemImage: "mic")
+                Label("Hold Option + Space while selecting text, then release to explain it", systemImage: "text.cursor")
+                Label("Hold Option + Command while dragging a screen region, then release to ask", systemImage: "cursorarrow.motionlines")
+                Label("Hold Control + Option, speak, then release for Quick Buddy", systemImage: "mic")
             }
             .font(.body)
 
@@ -55,8 +55,8 @@ struct PermissionOnboardingView: View {
 
             Spacer(minLength: 0)
 
-            if BuddyPermission.allCases.allSatisfy({ statuses[$0]?.isGranted == true }) {
-                Label("All Lexi permissions are enabled.", systemImage: "checkmark.circle.fill")
+            if BuddyPermissions.requiredPermissions.allSatisfy({ statuses[$0]?.isGranted == true }) {
+                Label("Required Lexi permissions are enabled.", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
                 Text("After enabling permissions in System Settings, click Re-check. Some changes may require restarting Lexi.")

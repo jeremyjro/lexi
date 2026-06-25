@@ -4,11 +4,13 @@ final class ClipboardFallback {
     func copyCurrentSelection() -> String {
         let pasteboard = NSPasteboard.general
         let snapshot = PasteboardSnapshot(pasteboard: pasteboard)
+        pasteboard.clearContents()
+        let clearedChangeCount = pasteboard.changeCount
 
         synthesizeCopy()
         RunLoop.current.run(until: Date().addingTimeInterval(0.08))
 
-        let copiedText = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let copiedText = pasteboard.changeCount == clearedChangeCount ? "" : pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         snapshot.restore(to: pasteboard)
         return copiedText
     }

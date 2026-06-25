@@ -229,7 +229,6 @@ private final class BuddyOverlayView: NSView {
         super.draw(dirtyRect)
         drawScrim()
         drawSelection()
-        drawOrb()
     }
 
     private func drawScrim() {
@@ -240,61 +239,22 @@ private final class BuddyOverlayView: NSView {
     private func drawSelection() {
         guard let selection = state.selectionRect?.intersection(screenFrame), !selection.isNull else { return }
         let rect = localRect(selection)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10)
-        NSColor.systemBlue.withAlphaComponent(0.16).setFill()
-        path.fill()
-        NSColor.systemBlue.withAlphaComponent(0.86).setStroke()
-        path.lineWidth = 2
-        path.stroke()
-    }
-
-    private func drawOrb() {
-        guard screenFrame.contains(state.cursorLocation) else { return }
-        let point = localPoint(state.cursorLocation)
-        let radius: CGFloat = 18
-        let rect = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
-        let path = NSBezierPath(ovalIn: rect)
-        NSColor.systemBlue.withAlphaComponent(0.92).setFill()
-        path.fill()
-        NSColor.white.withAlphaComponent(0.95).setStroke()
-        path.lineWidth = 2
+        let path = NSBezierPath(roundedRect: rect, xRadius: 12, yRadius: 12)
+        NSGradient(colors: [
+            NSColor.white.withAlphaComponent(0.16),
+            NSColor(calibratedWhite: 0.94, alpha: 0.07),
+            NSColor.white.withAlphaComponent(0.11)
+        ])?.draw(in: path, angle: -38)
+        NSColor.white.withAlphaComponent(0.58).setStroke()
+        path.lineWidth = 0.9
         path.stroke()
 
-        let inner = NSBezierPath(ovalIn: rect.insetBy(dx: 9, dy: 9))
-        NSColor.white.withAlphaComponent(0.92).setFill()
-        inner.fill()
-
-        let text = state.transcript.isEmpty ? "Drag to capture; release to ask" : state.transcript
-        drawCaption(text, near: point)
+        let inner = NSBezierPath(roundedRect: rect.insetBy(dx: 1.4, dy: 1.4), xRadius: 10, yRadius: 10)
+        NSColor.black.withAlphaComponent(0.08).setStroke()
+        inner.lineWidth = 0.5
+        inner.stroke()
     }
 
-    private func drawCaption(_ text: String, near point: CGPoint) {
-        let trimmed = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
-        guard !trimmed.isEmpty else { return }
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: NSColor.white,
-        ]
-        let attributed = NSAttributedString(string: trimmed, attributes: attributes)
-        let maxWidth: CGFloat = 300
-        var size = attributed.boundingRect(
-            with: NSSize(width: maxWidth, height: 60),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        ).size
-        size.width = ceil(min(maxWidth, size.width + 18))
-        size.height = ceil(size.height + 12)
-
-        var origin = CGPoint(x: point.x + 24, y: point.y - size.height / 2)
-        origin.x = min(max(origin.x, 10), bounds.width - size.width - 10)
-        origin.y = min(max(origin.y, 10), bounds.height - size.height - 10)
-
-        let bubble = CGRect(origin: origin, size: size)
-        let path = NSBezierPath(roundedRect: bubble, xRadius: 12, yRadius: 12)
-        NSColor.black.withAlphaComponent(0.72).setFill()
-        path.fill()
-        attributed.draw(with: bubble.insetBy(dx: 9, dy: 6), options: [.usesLineFragmentOrigin, .usesFontLeading])
-    }
 
     private func screenPoint(from event: NSEvent) -> CGPoint {
         guard let window else { return NSEvent.mouseLocation }

@@ -4,52 +4,67 @@ import Carbon.HIToolbox
 final class HotkeyManager {
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
-    private var onHotkey: (() -> Void)?
+    private var onPressed: (() -> Void)?
+    private var onReleased: (() -> Void)?
     private static weak var current: HotkeyManager?
 
     deinit {
         unregister()
     }
 
-    func registerOptionSpace(onHotkey: @escaping () -> Void) {
+    func registerOptionSpace(onPressed: @escaping () -> Void, onReleased: @escaping () -> Void) {
         unregister()
-        self.onHotkey = onHotkey
+        self.onPressed = onPressed
+        self.onReleased = onReleased
         Self.current = self
 
-        var eventSpec = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: OSType(kEventHotKeyReleased)
-        )
+        let eventSpecs = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: OSType(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: OSType(kEventHotKeyReleased)
+            )
+        ]
 
-        InstallEventHandler(
-            GetApplicationEventTarget(),
-            { _, event, _ in
-                var hotKeyID = EventHotKeyID()
-                let status = GetEventParameter(
-                    event,
-                    EventParamName(kEventParamDirectObject),
-                    EventParamType(typeEventHotKeyID),
-                    nil,
-                    MemoryLayout<EventHotKeyID>.size,
-                    nil,
-                    &hotKeyID
-                )
+        _ = eventSpecs.withUnsafeBufferPointer { specs in
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                { _, event, _ in
+                    var hotKeyID = EventHotKeyID()
+                    let status = GetEventParameter(
+                        event,
+                        EventParamName(kEventParamDirectObject),
+                        EventParamType(typeEventHotKeyID),
+                        nil,
+                        MemoryLayout<EventHotKeyID>.size,
+                        nil,
+                        &hotKeyID
+                    )
 
-                guard status == noErr, hotKeyID.id == 1 else {
-                    return OSStatus(eventNotHandledErr)
-                }
+                    guard status == noErr, hotKeyID.id == 1 else {
+                        return OSStatus(eventNotHandledErr)
+                    }
 
-                DispatchQueue.main.async {
-                    HotkeyManager.current?.onHotkey?()
-                }
+                    let eventKind = GetEventKind(event)
+                    DispatchQueue.main.async {
+                        if eventKind == OSType(kEventHotKeyPressed) {
+                            HotkeyManager.current?.onPressed?()
+                        } else if eventKind == OSType(kEventHotKeyReleased) {
+                            HotkeyManager.current?.onReleased?()
+                        }
+                    }
 
-                return noErr
-            },
-            1,
-            &eventSpec,
-            nil,
-            &eventHandlerRef
-        )
+                    return noErr
+                },
+                specs.count,
+                specs.baseAddress,
+                nil,
+                &eventHandlerRef
+            )
+        }
 
         let hotKeyID = EventHotKeyID(signature: OSType(fourCharCode("Lexi")), id: 1)
         RegisterEventHotKey(

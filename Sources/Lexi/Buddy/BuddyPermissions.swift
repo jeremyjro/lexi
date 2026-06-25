@@ -77,13 +77,21 @@ enum BuddyPermissions {
     }
 
     static var allGranted: Bool {
-        BuddyPermission.allCases.allSatisfy { status($0).isGranted }
+        requiredPermissions.allSatisfy { status($0).isGranted }
+    }
+
+    static var requiredPermissions: [BuddyPermission] {
+        var permissions: [BuddyPermission] = [.accessibility, .screenRecording, .microphone]
+        if AppConfiguration.voiceProvider == .appleSpeech {
+            permissions.append(.speechRecognition)
+        }
+        return permissions
     }
 
     /// Permissions the buddy gesture needs to function (everything except the
     /// V1-only Accessibility check, which has its own dedicated flow).
     static var buddyReady: Bool {
-        [BuddyPermission.screenRecording, .microphone, .speechRecognition].allSatisfy { status($0).isGranted }
+        requiredPermissions.filter { $0 != .accessibility }.allSatisfy { status($0).isGranted }
     }
 
     static func request(_ permission: BuddyPermission, completion: @escaping (BuddyPermissionStatus) -> Void) {

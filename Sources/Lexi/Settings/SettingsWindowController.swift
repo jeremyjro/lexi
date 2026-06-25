@@ -20,6 +20,8 @@ private struct SettingsView: View {
 
     @State private var proxyURL = UserDefaults.standard.string(forKey: "LexiProxyBaseURL") ?? AppConfiguration.defaultProxyBaseURL.absoluteString
     @State private var proxyToken = UserDefaults.standard.string(forKey: "LexiProxyToken") ?? ""
+    @State private var selectedVoiceProviderRawValue = AppConfiguration.voiceProvider.rawValue
+    @State private var isReadAloudEnabled = AppConfiguration.isTTSReadAloudEnabled
     @State private var statusText = "Not checked yet."
     @State private var isCheckingStatus = false
     @State private var permissionStatuses = Dictionary(uniqueKeysWithValues: BuddyPermission.allCases.map { ($0, BuddyPermissions.status($0)) })
@@ -30,6 +32,7 @@ private struct SettingsView: View {
                 header
                 shortcutsSection
                 connectionSection
+                voiceSection
                 statusSection
                 permissionsSection
                 appSection
@@ -55,8 +58,9 @@ private struct SettingsView: View {
     private var shortcutsSection: some View {
         section("Shortcuts") {
             VStack(alignment: .leading, spacing: 10) {
-                settingsRow("Explain highlighted text", "Hold Option + Space, then release")
-                settingsRow("Buddy Capture", "Hold Option + Command, release to enter screenshot mode, drag a region, release trackpad/mouse to ask")
+                settingsRow("Explain highlighted text", "Hold Option + Space while selecting text, then release to explain")
+                settingsRow("Precise Buddy", "Hold Option + Command, drag a screen region, then release the keys to ask")
+                settingsRow("Quick Buddy", "Hold Control + Option, speak, then release to capture the focused window or cursor screen")
                 settingsRow("Nested lookup", "Inside an answer, highlight text and press →")
                 settingsRow("Close/cancel", "Esc")
                 HStack {
@@ -103,6 +107,38 @@ private struct SettingsView: View {
                         saveSettings()
                     }
                     .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+    }
+
+    private var voiceSection: some View {
+        section("Voice and Read-Aloud") {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Transcription provider")
+                        .font(.headline)
+                    Picker("Transcription provider", selection: $selectedVoiceProviderRawValue) {
+                        ForEach(LexiVoiceProvider.allCases) { provider in
+                            Text(provider.displayName).tag(provider.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(selectedVoiceProviderRawValue == LexiVoiceProvider.assemblyAI.rawValue ? "Requires ASSEMBLYAI_API_KEY on the proxy; falls back to Apple Speech if unavailable." : "Uses local Apple Speech and requires macOS Speech Recognition permission.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Toggle("Read answers aloud with ElevenLabs", isOn: $isReadAloudEnabled)
+                Text("Read-aloud requires ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID on the proxy. It is off by default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Spacer()
+                    Button("Save Voice Settings") {
+                        saveSettings()
+                    }
                 }
             }
         }
@@ -272,6 +308,9 @@ private struct SettingsView: View {
             proxyToken = trimmedToken
         }
 
+        UserDefaults.standard.set(selectedVoiceProviderRawValue, forKey: "LexiVoiceProvider")
+        UserDefaults.standard.set(isReadAloudEnabled, forKey: "LexiTTSReadAloudEnabled")
+
         statusText = "Settings saved. Check status to verify the active connection."
     }
 
@@ -287,6 +326,9 @@ private struct SettingsView: View {
                 let localTokenStatus = client.hasProxyToken ? "Yes" : "No"
                 let backendKeyStatus = health.anthropicApiKeyConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                 let backendTokenStatus = health.proxyTokenConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
+                let assemblyStatus = health.assemblyAIConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
+                let elevenLabsStatus = health.elevenLabsConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
+                let diagnostics = LexiDiagnostics.snapshot.summary
                 await MainActor.run {
                     statusText = """
                     Online: \(health.ok ? "Yes" : "No")
@@ -297,6 +339,11 @@ private struct SettingsView: View {
                     Local token: \(localTokenStatus)
                     Backend API key: \(backendKeyStatus)
                     Backend proxy token: \(backendTokenStatus)
+                    AssemblyAI: \(assemblyStatus)
+                    ElevenLabs: \(elevenLabsStatus)
+
+                    Diagnostics:
+                    \(diagnostics)
                     """
                     isCheckingStatus = false
                 }

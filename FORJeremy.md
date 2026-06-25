@@ -659,3 +659,343 @@ The important part is not simply that a second explanation can be requested. The
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 When adding depth to a product, make deeper work contextual and make returning cheap. That combination is what turns exploration from a tangent into a loop.
+
+## 2026-06-24 — Lexi v0.3.0: Clicky-informed Buddy, voice, OCR, memory, and proxy upgrades
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We started with a comparison between Lexi and Clicky. The important conclusion was not “copy Clicky.” Clicky is strongest as a voice-first screen companion. Lexi is strongest as a research comprehension tool. So the right move was to borrow Clicky’s infrastructure where it helps the research loop, while protecting Lexi’s core shape: highlight-first, text-first, concise, contextual explanations.
+
+That is why we first wrote a versioned technical spec in `LEXI_TECHNICAL_PRODUCT_SPEC_v0.3.0.md`. The spec acts like a blueprint taped to the wall before construction starts. Without it, this work could easily sprawl into “make a Clicky clone.” With it, every implementation decision had to answer the question: does this make Lexi faster and smarter for understanding research material?
+
+Then we implemented the phases in layers: network hardening, image quality, quick push-to-talk, transcription providers, OCR, session memory, optional TTS, and visual callouts. The order matters because each layer feeds the next one. Better network handling makes image requests safer. Better images and OCR make Buddy answers smarter. Better voice transcription makes quick Buddy usable. Session memory ties the loops together.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+The biggest rejected road was turning Lexi into a full always-on cursor companion. That would be flashy, but it would blur the product. Lexi’s job is not to be a little character that lives on screen all day. Lexi’s job is to compress the time between confusion and understanding.
+
+We also rejected sending huge screenshots just because the proxy now accepts up to 25 MB. A bigger pipe does not mean you should flood it. The better choice is adaptive compression: enough image quality for the model to read and reason, but not so much that every question becomes slow, expensive, and privacy-heavy.
+
+Another rejected shortcut was putting AssemblyAI or ElevenLabs keys directly in the app. That would be convenient locally but wrong for a real product. The app now supports those providers through proxy placeholders, so secrets stay server-side and can be added later by configuration.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+Think of this version like upgrading a research assistant from a notepad into a field kit. The notepad still matters: highlight text, get the answer, drill down. But now the kit also has a microphone, camera, OCR scanner, memory card, and optional speaker.
+
+`ExplainClient` is the network pipe. It now uses a shared configured session and records diagnostics. `RegionScreenshotCapture` is the camera. It captures regions, focused windows, or cursor screens and compresses adaptively. `BuddyTextRecognizer` is the OCR scanner, pulling text out of screenshots before the model sees them. `BuddyVoiceCapture` plus the new transcription provider layer is the microphone, with Apple Speech as local fallback and AssemblyAI as the stronger streaming option. `ResearchSessionMemory` is the memory card, keeping recent context in RAM so follow-ups and Buddy questions can stay connected. `ElevenLabsTTSClient` is the optional speaker. `BuddyCalloutOverlayController` is the pointer, showing where the model says something relevant is on screen.
+
+The proxy sits behind all of this as the external API gateway. It now has `/transcribe-token` for AssemblyAI, `/tts` for ElevenLabs, richer `/health`, and prompt support for OCR/session context/callout tags.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+We used ScreenCaptureKit because it is the right macOS framework for screen and window capture. We used Vision OCR because it is local, already available on macOS, and avoids adding another cloud OCR dependency. We used AVFoundation because microphone capture and audio playback are native macOS jobs. We used Speech as the local fallback because Apple Speech is already integrated with macOS permissions.
+
+The transcription provider protocol is the important design move. Without that abstraction, AssemblyAI would get tangled directly into `BuddyVoiceCapture`. With the abstraction, Lexi can choose Apple Speech or AssemblyAI from Settings, and future providers can be added without rewriting the Buddy flow.
+
+For the proxy, Express stayed in place because Lexi already has a working Railway proxy with SSE streaming, auth, health checks, and model routing. Replacing it with Clicky’s thinner Worker design would have thrown away useful product-specific infrastructure.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized completeness and integration over perfect polish. The main flows are implemented and compile: quick Buddy, provider selection, OCR, memory, TTS, callouts, adaptive images, and proxy placeholders. But manual end-to-end testing still needs real AssemblyAI and ElevenLabs secrets, and packaging/deploying should only happen once you confirm the side effects.
+
+We prioritized privacy by default. Lexi still does not capture all screens by default. Quick Buddy captures the focused window or cursor screen, and precise Buddy captures only the dragged region. That sacrifices some “the AI sees everything” convenience, but it better matches Lexi’s research-assistant identity.
+
+We prioritized text-first UX. Read-aloud exists, but it is off by default. That means Lexi does not become noisy or voice-dependent. The tradeoff is that the app will feel less like Clicky out of the box, but more like the product Lexi is supposed to be.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The messiest part was threading new context through existing call paths without breaking the follow-up work already in progress. Root lookups, nested lookups, follow-ups, and Buddy captures all now accept session context, but they each build payloads slightly differently. That required careful updates to Swift payload structs, proxy parsing, and prompt generation.
+
+Another issue came from Vision OCR: the first implementation used a property that was not available on the project’s macOS SDK. The build caught it, and we removed that property instead of fighting the framework.
+
+AssemblyAI also had a subtle behavioral trap. A realtime transcription service can emit “turn” messages before the user releases the hotkey. If Lexi finalized on the first turn, quick Buddy could submit too early. We fixed that by only delivering the final AssemblyAI transcript after `requestFinalTranscript()` is called on release.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The biggest future pitfall is assuming provider scaffolding equals production reliability. AssemblyAI and ElevenLabs are wired in, but they still need real proxy secrets and live testing. Voice systems fail in human ways: fast press-and-release, background noise, token endpoint errors, network changes, and permission oddities.
+
+Another pitfall is image payload creep. The proxy can take large bodies, but latency and cost grow quietly. Adaptive compression should remain intentional. If answers are bad, first inspect OCR and image diagnostics before simply raising the cap.
+
+Also watch out for callout coordinates. Mapping model-provided pixel coordinates back to macOS screen coordinates is easy to get 90% right and still feel wrong. The precise-region path is the safest because the source rectangle is known. Focused-window coordinates may need more real-world testing across Retina displays and multi-monitor setups.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner would see “add voice” as the feature. A senior person sees that voice is actually a pipeline: shortcut state, permission state, microphone buffers, transcription provider, finalization timing, screenshot timing, prompt context, streaming answer, cancellation, and optional playback. If any link is weak, the whole thing feels broken.
+
+The non-obvious senior move was keeping Lexi’s identity intact. Clicky’s best ideas are useful, but copying the whole product would make Lexi less differentiated. The expert version of borrowing is selective: take the engine parts, not the paint job.
+
+Another expert detail is bounded memory. Session context is valuable, but unbounded history becomes slow, expensive, and privacy-risky. Lexi keeps recent memory in-process and compact, which gives continuity without turning every request into a giant transcript dump.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+The transferable lesson is: when analyzing a competitor or adjacent product, do not ask “what should we copy?” Ask “which underlying capability changes our core loop?” Clicky’s cursor personality is not the point. Its low-friction voice loop, provider abstraction, screenshot labeling, and response-state machine are the reusable assets.
+
+This applies to any product strategy. If you run a sales process, do not copy another company’s whole funnel just because it looks slick. Identify the one mechanism that shortens time-to-trust. If you build content, do not copy someone’s style wholesale. Find the mechanism that improves retention or clarity.
+
+The single most important takeaway: Lexi gets stronger when it borrows infrastructure from companion apps while staying disciplined about being a research comprehension accelerator.
+
+## 2026-06-24 — Cursor Buddy follower UI and activity polish
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We added the smallest possible always-visible sign that Lexi is alive: a tiny liquid-glass cursor Buddy that follows near the real cursor. The reasoning was product trust. A background helper feels broken if nothing on screen acknowledges that it exists. The follower gives Lexi a pulse without turning the app into a loud character.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not replace the real cursor or hide it. That would be risky and annoying because the system cursor is sacred UI. We also did not add a large panel or mascot. The request was polish and presence, not another attention-demanding surface.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The new `BuddyCursorFollowerController` owns transparent non-interactive overlay panels across screens. It samples the real mouse location, offsets a tiny Buddy next to it, and uses spring physics so it accelerates toward the cursor and decelerates as it catches up. `AppDelegate` and `BuddyCaptureCoordinator` now send activity states into that controller: idle, listening, selecting, working, streaming, and error.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+AppKit panels were the right tool because this UI must float above normal apps, follow the mouse globally, join Spaces, and ignore mouse events. A SwiftUI view inside a normal app window would not be able to follow the cursor across the whole desktop. The animation uses a timer plus a simple spring model rather than a fixed delay, because a spring gives the “catches up naturally” feeling you wanted.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized subtlety. The idle state is translucent and small. Active states add a minimal halo and three animated waveform bars. That means it is not yet a full branded animation system, but it should feel calmer and more premium than a big spinner.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main design trap was making the follower useful without interfering with clicks. The overlay panels must be high enough to be visible but also `ignoresMouseEvents = true`, otherwise Lexi would literally block the user from using their computer.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The next testing risk is visual feel, not compilation. The spring constants, cursor offset, opacity, and waveform size will probably need tuning after you use it for a few minutes. Cursor-follow UI can go from delightful to annoying very quickly if it is too bright, too close, or too laggy.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+The expert detail is that polish is state architecture, not just drawing. A pretty cursor blob is not enough. It has to know when Lexi is listening, capturing, asking, streaming, done, or errored. That is what makes the animation communicate something real instead of becoming decoration.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Good ambient UI should answer one question: “Is the system with me right now?” If the answer is yes, it can stay tiny. This applies to voice apps, automations, AI agents, and even sales tools. The best status indicator is often not a dashboard; it is a small, timely signal that the machine is paying attention.
+
+## 2026-06-24 — Hold-to-select shortcuts and synchronized Buddy feedback
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We changed Lexi’s highlight and precise Buddy gestures from “press/release to trigger” into “hold while selecting, release to submit.” This matters because it gives the user a clear physical contract: while the keys are down, Lexi is listening for a selection; when the keys come up, Lexi either acts or cancels.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not keep showing a no-selection panel on empty Option+Space release. That would make a canceled gesture feel like an error. Empty release now cancels quietly for the text path.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+`HotkeyManager` now emits Option+Space press and release. `BuddyHotkeyMonitor` now begins precise screen capture on Option+Command press and ends it on modifier release. `BuddyCaptureCoordinator` records the region on mouse-up but waits for modifier release before submitting when the capture came from the shortcut.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+Carbon hotkeys still handle Option+Space because they are reliable for global keyboard shortcuts. The CGEvent-based Buddy monitor remains right for Option+Command because it needs more nuanced modifier-state tracking and cancellation.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized gesture clarity and synced feedback. The tradeoff is that Option+Space now asks the user to hold keys while selecting text, which can be physically more demanding than selecting first and pressing later. The UX is more intentional, but less casual.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The subtle part was deciding when screen capture should submit. Mouse-up means “the rectangle exists,” but modifier release now means “I am done and want Lexi to act.” Separating those two moments makes the behavior match the user’s mental model.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+Some apps may treat Option+Space or held modifiers specially while selecting text. If text selection feels awkward in particular apps, the shortcut may need to become configurable.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might focus on the hotkey alone. The expert detail is synchronization: the key state, cursor Buddy animation, selection state, and submission/cancellation state all need to tell the same story.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Good interaction design makes invisible state tangible. Holding the key is not just input; it is a temporary mode. The UI should breathe only while that mode exists.
+
+## 2026-06-24 — Moving capture hint, strict selection, voice-highlight, and liquid-glass panel polish
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We removed the static precise-capture prompt and moved that instruction into the cursor Buddy itself. The point is spatial consistency: if Buddy follows the cursor, its guidance should follow the cursor too. We also made highlight lookup stricter so Lexi only acts on actual selected text, not stale clipboard content.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not keep the full-screen overlay caption because it created a dead, static UI element. We also did not show an error when Option+Space has no selected text, because empty release is a cancel, not a failure.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+`BuddyCursorFollowerController` now owns short-lived hint text that rides with the orb. `BuddyOverlayController` only draws the scrim and selection rectangle. `ClipboardFallback` clears and restores the pasteboard around synthetic copy, preventing stale clipboard answers. Highlight captures can now carry an optional voice question through `CapturedSelection`, `ExplainClient`, and the proxy prompt.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+The cursor hint belongs in the AppKit overlay because it needs global desktop positioning. The answer panel remains SwiftUI because product styling, layout, and composer controls are much faster to iterate there.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized correctness over convenience for highlight lookup. If nothing is selected, Lexi cancels. That removes accidental answers but means users need to be intentional about the selection. For voice-highlight, spoken questions are optional; no transcript keeps the existing automatic explanation flow.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The clipboard bug was a classic macOS trap. If synthetic copy fails, the pasteboard may still contain old text. Reading it directly makes the app look like it selected something random. Clearing first and restoring afterward makes the fallback honest.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The highlight voice question depends on the proxy understanding the optional `question` field. The app can send it now, but production responses need the updated proxy deployed too.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+The expert detail is ownership of transient UI. The full-screen capture overlay should own selection geometry, not instruction copy. The cursor Buddy should own ephemeral command feedback because it is the thing the user is visually tracking.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Good product UI avoids dead surfaces. If an instruction is tied to an action near the cursor, put it near the cursor and make it move with the action. Static overlays are useful for boundaries; dynamic companions are useful for guidance.
+
+## 2026-06-24 — Top-right answer panel, cleaner answer surface, and deeper inference
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We treated this as two connected problems: the answer panel was visually noisy, and the backend was being instructed to be too brief. The UI fix removed the source/context material beneath generated answers, moved the panel to a predictable top-right home, and gave the answer area more room. The inference fix removed the old “under ~60 words” behavior and told the backend to answer spoken questions first or infer the likely question when there is no voice prompt.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not redesign the whole panel or remove loading/error diagnostics. Those are still useful when something goes wrong. We also did not remove the optional voice-highlight path because it was already wired through the app; the smarter move was to make the backend respect that question field more strongly.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The Swift panel owns where the answer appears and how much space it gets. The proxy owns how the model thinks. Those two pieces need to agree: a deeper answer needs a taller answer box, and a taller answer box only matters if the backend stops producing tiny replies.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+The UI stayed in AppKit plus SwiftUI because AppKit controls the floating `NSPanel` placement and SwiftUI controls the glass card layout. The inference change stayed in the TypeScript proxy because prompt policy and token limits belong server-side, not inside the Mac app.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized predictability and reading comfort. The tradeoff is that the panel no longer appears near the selected text, so your eyes travel to the top-right instead of staying at the highlight. That is intentional: Lexi now behaves more like a stable assistant tray than a cursor tooltip.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main discovery was that the source/context clutter appeared in more than one UI state. Streaming answers appended capture details, and final lookup cards also displayed source/window/app rows. Fixing only one would have left the problem half-solved.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The deployed Railway proxy must receive the prompt/token-limit changes before production answers get deeper. The local Swift build passes, but the installed `/Applications/Lexi.app` will not change until the app is packaged and replaced.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might only make the box taller. The senior move is noticing that answer length, scroll comfort, metadata noise, and panel position are one product loop. If one part changes without the others, the experience still feels wrong.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When a product feels “thin,” check both the surface and the engine. Sometimes the UI is cramped; sometimes the prompt is timid; often it is both. Good fixes line up the physical space with the quality of thought you expect inside it.
+
+## 2026-06-24 — Collapsed answer pill with hover-to-expand
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We changed the answer panel from “always open as the full card” to “start as a tiny signal, then expand only when you ask for it by hovering.” The reason is attention budgeting: Lexi should tell you it is working without stealing the entire top-right corner.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not just visually shrink the panel while keeping the full invisible window. That would still block screen space. Instead, the actual `NSPanel` now changes physical size between a small pill and the full answer card.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The AppKit panel owns real window geometry, while the SwiftUI view owns the two visual states. Hover changes the SwiftUI expansion flag; that flag calls back into AppKit to animate the window frame from the top-right anchor.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+SwiftUI `onHover` is the right tool for the interaction. AppKit `setFrame(... animate:)` is the right tool for making the desktop window itself expand smoothly instead of faking it inside a big hitbox.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized a quiet default state. The tradeoff is that the user now has one extra gesture — hover — before reading the full answer. That is intentional because the answer should be available, not automatically dominant.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The subtle issue was final answers. Lexi converts a completed stream into a lookup card, so the collapse behavior had to include `.lookup`, not just `.loading` and `.streaming`. Otherwise the card would still pop open when the answer finished.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+If the cursor happens to already be in the top-right when the pill appears, it may expand immediately. That is logically correct hover behavior, but if it feels jumpy in practice, the next refinement would be a tiny hover delay.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might animate the view but leave the window big. The expert detail is making the real interactive footprint match the visual footprint. What you see and what blocks your screen should be the same size.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Good UI often starts as a low-commitment signal. Notification badges, typing indicators, and loading pills all follow the same idea: show enough to reassure the user, then reveal depth only when they lean in.
+
+## 2026-06-24 — Fixing hover expansion hang and deploying deeper inference
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We fixed the hover expansion by removing the feedback loop. The original version expanded on hover and collapsed on hover exit, but changing the real window size during the transition can create rapid enter/exit events near the edge. The safer behavior is one-way: each answer starts as a pill, hover expands it, and it stays expanded.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not try to tune the spring animation first because the bug was structural, not aesthetic. A prettier animation still would have had the same oscillation risk.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+SwiftUI now changes only from collapsed to expanded. AppKit only resizes the native panel when the expanded state actually changes, not on every streamed token. That separation keeps streaming text updates from repeatedly poking the window manager.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+The important tool was restraint: fewer state transitions. We also deferred the AppKit resize with `DispatchQueue.main.async`, letting SwiftUI finish its hover update before the native window frame moves.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized stability. The tradeoff is that the panel does not auto-collapse when the cursor leaves. That is acceptable because the main pain was startup screen takeover; once you intentionally expand, keeping it open is predictable.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The rainbow spinner was likely not an AI/backend delay. It was UI churn: hover state, SwiftUI transition, native frame animation, and streaming updates all interacting too frequently.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+If auto-collapse comes back later, it should use a delay and explicit mouse tracking, not raw `onHover` exit during a resizing transition.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+The expert detail is that animation bugs are often state-machine bugs. The fix is not always “make it smoother”; sometimes it is “make fewer states possible.”
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When a system hangs during a transition, look for loops between signal and response. If the act of responding creates a new signal, you may have built a tiny machine that argues with itself.
+
+## 2026-06-24 — Auto-expand completion and Perplexity research path
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We split the work into UI timing and answer accuracy. For UI, Lexi now stays small while generating, auto-opens when the final answer is ready, and collapses after the cursor leaves. For accuracy, we added a proxy-side Perplexity research step so exact names and niche definitions can be web-grounded before Claude writes the final answer.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not put Perplexity directly in the Mac app because API keys belong behind the proxy. We also did not force every lookup through research with no controls; the new mode is configurable so accuracy and latency can be tuned.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The Mac app still owns capture and display. The Railway proxy now owns both research and final synthesis: Perplexity gathers source-grounded context, then Claude uses that context plus the passage to answer in Lexi’s voice.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+Perplexity Sonar fits this use case because it is built for web-grounded answers and citations. Exa is strong for search/retrieval, but Sonar gives an answer-shaped research brief that can be fed directly into Claude.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized accuracy for ambiguous/niche terms. The tradeoff is added latency when research triggers. That is why research is guarded by environment variables and auto heuristics.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The key constraint is credentials. The integration is deployed, but production research remains inactive until `PERPLEXITY_API_KEY` is set in Railway. Code alone cannot create the external research capability without that key.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+Research should be monitored for latency. If it feels slow, use `LEXI_RESEARCH_MODE=auto`; if accuracy matters more than speed, use `always`.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might ask Claude to “search harder.” The expert move is adding a second system with a different job: retrieval first, synthesis second. Accuracy improves when each model does the job it is best at.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When a system guesses too well, that is still a bug. Prediction is not evidence. For high-accuracy workflows, separate “find the facts” from “explain the facts.”

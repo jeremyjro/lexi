@@ -3,6 +3,7 @@ import CoreGraphics
 
 final class BuddyHotkeyMonitor {
     var onBegin: (@MainActor (CGPoint) -> Void)?
+    var onEnd: (@MainActor (CGPoint) -> Void)?
     var onCancel: (@MainActor () -> Void)?
     var onInstallFailed: (@MainActor () -> Void)?
 
@@ -139,13 +140,17 @@ final class BuddyHotkeyMonitor {
 
     private func handleOptionCommandState(_ optionCommandHeld: Bool) {
         if optionCommandHeld && !wasOptionCommandHeld && !isActive {
-            isOptionCommandArmed = true
-        } else if !optionCommandHeld && wasOptionCommandHeld && isOptionCommandArmed && !isActive {
-            isOptionCommandArmed = false
             isActive = true
             isDragging = false
+            isOptionCommandArmed = false
             let location = mouseLocation()
             dispatch { self.onBegin?(location) }
+        } else if !optionCommandHeld && wasOptionCommandHeld && isActive {
+            isActive = false
+            isDragging = false
+            isOptionCommandArmed = false
+            let location = mouseLocation()
+            dispatch { self.onEnd?(location) }
         }
         wasOptionCommandHeld = optionCommandHeld
     }

@@ -8,6 +8,11 @@ final class RawCapturePanelController {
             panel.onNestedLookupRequested = onNestedLookupRequested
         }
     }
+    var onFollowUpRequested: ((String, LookupNavigationStack) -> Void)? {
+        didSet {
+            panel.onFollowUpRequested = onFollowUpRequested
+        }
+    }
 
     private let panel: RawCapturePanel
     private var keyMonitor: Any?
@@ -49,7 +54,7 @@ final class RawCapturePanelController {
     }
 
     func show(status: RawCapturePanelStatus, anchorRect: CGRect?) {
-        panel.update(status: status)
+        panel.update(status: status, resetExpansion: true)
         panel.position(anchorRect: anchorRect)
         panel.orderFrontRegardless()
     }
@@ -65,6 +70,10 @@ final class RawCapturePanelController {
 
     func beginNestedLookup(term: String) -> UUID? {
         panel.beginNestedLookup(term: term)
+    }
+
+    func beginFollowUp(question: String) -> UUID? {
+        panel.beginFollowUp(question: question)
     }
 
     func updateLookupAnswer(nodeId: UUID, answer: String) {
@@ -115,11 +124,17 @@ final class RawCapturePanelController {
 
 final class RawCapturePanel: NSPanel {
     private let viewModel = RawCapturePanelViewModel()
-    private let panelSize = NSSize(width: 420, height: 380)
+    private let expandedPanelSize = NSSize(width: 448, height: 560)
+    private let collapsedPanelSize = NSSize(width: 244, height: 54)
+    private let panelInset: CGFloat = 18
 
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
         get { viewModel.onNestedLookupRequested }
         set { viewModel.onNestedLookupRequested = newValue }
+    }
+    var onFollowUpRequested: ((String, LookupNavigationStack) -> Void)? {
+        get { viewModel.onFollowUpRequested }
+        set { viewModel.onFollowUpRequested = newValue }
     }
 
     override var canBecomeKey: Bool { true }
@@ -127,7 +142,7 @@ final class RawCapturePanel: NSPanel {
 
     init() {
         super.init(
-            contentRect: NSRect(origin: .zero, size: panelSize),
+            contentRect: NSRect(origin: .zero, size: expandedPanelSize),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -142,7 +157,11 @@ final class RawCapturePanel: NSPanel {
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = true
 
-        contentView = NSHostingView(rootView: RawCapturePanelView(viewModel: viewModel))
+        contentView = NSHostingView(rootView: RawCapturePanelView(viewModel: viewModel) { [weak self] animated in
+            DispatchQueue.main.async {
+                self?.applyTopRightFrame(animated: animated)
+            }
+        })
     }
 
     var selectedAnswerText: String {
@@ -158,8 +177,12 @@ final class RawCapturePanel: NSPanel {
         viewModel.currentLookupStack
     }
 
-    func update(status: RawCapturePanelStatus) {
-        viewModel.update(status: status)
+    func update(status: RawCapturePanelStatus, resetExpansion: Bool = false) {
+        let wasExpanded = viewModel.isPanelExpanded
+        viewModel.update(status: status, resetExpansion: resetExpansion)
+        if isVisible, wasExpanded != viewModel.isPanelExpanded {
+            applyTopRightFrame(animated: true)
+        }
     }
 
     @discardableResult
@@ -174,6 +197,10 @@ final class RawCapturePanel: NSPanel {
 
     func beginNestedLookup(term: String) -> UUID? {
         viewModel.beginNestedLookup(term: term)
+    }
+
+    func beginFollowUp(question: String) -> UUID? {
+        viewModel.beginFollowUp(question: question)
     }
 
     func updateLookupAnswer(nodeId: UUID, answer: String) {
@@ -194,40 +221,21 @@ final class RawCapturePanel: NSPanel {
     }
 
     func position(anchorRect: CGRect?) {
-        let screen = screen(containing: anchorRect) ?? NSScreen.main
-        let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 900, height: 700)
-        let anchor = anchorRect ?? CGRect(origin: NSEvent.mouseLocation, size: .zero)
-        let gap: CGFloat = 10
-        let inset: CGFloat = 8
+        applyTopRightFrame(animated: false)
+    }
 
-        var origin: NSPoint
-        if anchorRect == nil {
-            origin = NSPoint(x: anchor.origin.x + 14, y: anchor.origin.y - panelSize.height - 14)
-        } else {
-            let belowY = anchor.minY - panelSize.height - gap
-            let aboveY = anchor.maxY + gap
-            let roomBelow = anchor.minY - visibleFrame.minY
-            let roomAbove = visibleFrame.maxY - anchor.maxY
-            origin = NSPoint(
-                x: anchor.midX - panelSize.width / 2,
-                y: roomBelow >= panelSize.height + gap || roomBelow >= roomAbove ? belowY : aboveY
-            )
-        }
+    private var currentPanelSize: NSSize {
+        viewModel.isPanelExpanded ? expandedPanelSize : collapsedPanelSize
+    }
 
-        origin.x = min(max(origin.x, visibleFrame.minX + inset), visibleFrame.maxX - panelSize.width - inset)
-        origin.y = min(max(origin.y, visibleFrame.minY + inset), visibleFrame.maxY - panelSize.height - inset)
-
-        if let anchorRect {
-            var frame = NSRect(origin: origin, size: panelSize)
-            if frame.intersects(anchorRect) {
-                let aboveY = min(anchorRect.maxY + gap, visibleFrame.maxY - panelSize.height - inset)
-                let belowY = max(anchorRect.minY - panelSize.height - gap, visibleFrame.minY + inset)
-                origin.y = visibleFrame.maxY - anchorRect.maxY > anchorRect.minY - visibleFrame.minY ? aboveY : belowY
-                frame.origin = origin
-            }
-        }
-
-        setFrame(NSRect(origin: origin, size: panelSize), display: true)
+    private func applyTopRightFrame(animated: Bool) {
+        let visibleFrame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 900, height: 700)
+        let size = currentPanelSize
+        let origin = NSPoint(
+            x: max(visibleFrame.minX + panelInset, visibleFrame.maxX - size.width - panelInset),
+            y: max(visibleFrame.minY + panelInset, visibleFrame.maxY - size.height - panelInset)
+        )
+        setFrame(NSRect(origin: origin, size: size), display: true, animate: animated)
     }
 
     private var liveSelectedText: String {
@@ -272,11 +280,36 @@ enum RawCapturePanelStatus {
     case noPermission
 }
 
+private extension RawCapturePanelStatus {
+    var canCollapseToPill: Bool {
+        switch self {
+        case .loading, .streaming, .answered, .lookup, .buddyLoading, .buddyStreaming:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var shouldAutoExpandOnEntry: Bool {
+        switch self {
+        case .answered:
+            return true
+        case .lookup(let stack):
+            return stack.currentNode?.answer.isEmpty == false
+        default:
+            return false
+        }
+    }
+}
+
 @MainActor
 final class RawCapturePanelViewModel: ObservableObject {
     @Published var status: RawCapturePanelStatus = .noSelection(appName: "", windowTitle: "")
     @Published var selectedAnswerText = ""
+    @Published var followUpQuestion = ""
+    @Published var isExpanded = true
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)?
+    var onFollowUpRequested: ((String, LookupNavigationStack) -> Void)?
 
     var currentAnswer: String? {
         switch status {
@@ -294,9 +327,23 @@ final class RawCapturePanelViewModel: ObservableObject {
         return stack
     }
 
-    func update(status: RawCapturePanelStatus) {
+    var isPanelExpanded: Bool {
+        !status.canCollapseToPill || isExpanded
+    }
+
+    func update(status: RawCapturePanelStatus, resetExpansion: Bool = false) {
         selectedAnswerText = ""
+        followUpQuestion = ""
+        if resetExpansion {
+            isExpanded = !status.canCollapseToPill
+        } else if status.shouldAutoExpandOnEntry || !status.canCollapseToPill {
+            isExpanded = true
+        }
         self.status = status
+    }
+
+    func setExpanded(_ expanded: Bool) {
+        isExpanded = status.canCollapseToPill ? expanded : true
     }
 
     @discardableResult
@@ -312,10 +359,31 @@ final class RawCapturePanelViewModel: ObservableObject {
         requestNestedLookup(term: selectedAnswerText)
     }
 
+    @discardableResult
+    func requestFollowUp() -> Bool {
+        let trimmed = followUpQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              case .lookup(let stack) = status,
+              stack.currentNode?.answer.isEmpty == false else { return false }
+        onFollowUpRequested?(trimmed, stack)
+        followUpQuestion = ""
+        return true
+    }
+
     func beginNestedLookup(term: String) -> UUID? {
         guard case .lookup(var stack) = status else { return nil }
         let nodeId = stack.pushPending(term: term)
         selectedAnswerText = ""
+        followUpQuestion = ""
+        status = .lookup(stack)
+        return nodeId
+    }
+
+    func beginFollowUp(question: String) -> UUID? {
+        guard case .lookup(var stack) = status else { return nil }
+        let nodeId = stack.pushFollowUp(question: question)
+        selectedAnswerText = ""
+        followUpQuestion = ""
         status = .lookup(stack)
         return nodeId
     }
@@ -361,43 +429,210 @@ final class RawCapturePanelViewModel: ObservableObject {
 struct RawCapturePanelView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var viewModel: RawCapturePanelViewModel
+    @State private var collapseTask: Task<Void, Never>?
+    let onExpansionChanged: (Bool) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        Group {
+            if viewModel.isPanelExpanded {
+                expandedPanel
+                    .transition(.scale(scale: 0.94, anchor: .topTrailing).combined(with: .opacity))
+            } else {
+                collapsedPill
+                    .transition(.scale(scale: 0.96, anchor: .topTrailing).combined(with: .opacity))
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: viewModel.isPanelExpanded ? 28 : 27, style: .continuous))
+        .onHover { hovering in
+            handleHover(hovering)
+        }
+        .onChange(of: viewModel.isPanelExpanded) { _, _ in
+            onExpansionChanged(!reduceMotion)
+        }
+        .onDisappear {
+            collapseTask?.cancel()
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86), value: viewModel.isPanelExpanded)
+    }
+
+    private func handleHover(_ hovering: Bool) {
+        collapseTask?.cancel()
+        guard viewModel.status.canCollapseToPill else { return }
+        let animation: Animation? = reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)
+        if hovering {
+            guard !viewModel.isPanelExpanded else { return }
+            withAnimation(animation) {
+                viewModel.setExpanded(true)
+            }
+        } else {
+            guard viewModel.isPanelExpanded else { return }
+            collapseTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 650_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(animation) {
+                    viewModel.setExpanded(false)
+                }
+            }
+        }
+    }
+
+    private var expandedPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
             topBar
             header
-            Divider()
+            softDivider
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
                 Text(footerText)
                 Spacer()
                 Text(footerShortcutText)
             }
-            .font(.caption)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
             .foregroundStyle(.secondary)
         }
-        .padding(18)
-        .frame(width: 420, height: 380, alignment: .topLeading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(20)
+        .frame(width: 448, height: 560, alignment: .topLeading)
+        .background(panelBackground)
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.48), Color.white.opacity(0.12), Color.black.opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         )
-        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
+        .shadow(color: .black.opacity(0.20), radius: 28, x: 0, y: 18)
+        .shadow(color: .white.opacity(0.20), radius: 1, x: 0, y: 1)
+    }
+
+    private var collapsedPill: some View {
+        HStack(spacing: 10) {
+            pillActivityIndicator
+            VStack(alignment: .leading, spacing: 2) {
+                Text(collapsedPillTitle)
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("Hover to expand")
+                    .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .frame(width: 244, height: 54, alignment: .center)
+        .background(collapsedPillBackground)
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.52), Color.white.opacity(0.14), Color.black.opacity(0.06)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: .black.opacity(0.16), radius: 18, x: 0, y: 10)
+        .shadow(color: .white.opacity(0.20), radius: 1, x: 0, y: 1)
+    }
+
+    @ViewBuilder
+    private var pillActivityIndicator: some View {
+        switch viewModel.status {
+        case .lookup, .answered:
+            Circle()
+                .fill(Color.green.opacity(0.82))
+                .frame(width: 9, height: 9)
+                .overlay(Circle().stroke(Color.white.opacity(0.55), lineWidth: 1))
+        default:
+            if reduceMotion {
+                Circle()
+                    .fill(Color.blue.opacity(0.78))
+                    .frame(width: 9, height: 9)
+                    .overlay(Circle().stroke(Color.white.opacity(0.55), lineWidth: 1))
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.72)
+                    .frame(width: 14, height: 14)
+            }
+        }
+    }
+
+    private var collapsedPillTitle: String {
+        switch viewModel.status {
+        case .loading:
+            return "Generating answer"
+        case .streaming:
+            return "Streaming answer"
+        case .buddyLoading:
+            return "Reading screen"
+        case .buddyStreaming:
+            return "Streaming insight"
+        case .answered, .lookup:
+            return "Answer ready"
+        default:
+            return "Lexi"
+        }
+    }
+
+    private var collapsedPillBackground: some View {
+        Capsule(style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.32), Color.white.opacity(0.10), Color.black.opacity(0.04)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .clipShape(Capsule(style: .continuous))
+            )
+    }
+
+    private var panelBackground: some View {
+        RoundedRectangle(cornerRadius: 28, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.26), Color.white.opacity(0.08), Color.black.opacity(0.04)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+            )
+    }
+
+    private var softDivider: some View {
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [Color.clear, Color.primary.opacity(0.12), Color.clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(height: 1)
     }
 
     private var topBar: some View {
         HStack(spacing: 8) {
             Text("Lexi")
-                .font(.caption.weight(.bold))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
             Text(statusTitle)
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(statusColor)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(statusColor.opacity(0.12), in: Capsule())
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(statusColor.opacity(0.10), in: Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.22), lineWidth: 0.7))
             Spacer()
             Text("⌥ Space")
                 .font(.caption.monospaced())
@@ -463,18 +698,12 @@ struct RawCapturePanelView: View {
                 }
                 captureDetails(capture)
             }
-        case .streaming(let capture, let answer), .answered(let capture, let answer):
+        case .streaming(_, let answer), .answered(_, let answer):
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(answer.isEmpty ? "…" : answer)
-                        .font(.system(size: 15, weight: .regular))
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
-                    Divider()
-                    captureDetails(capture)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                answerBubble(answer.isEmpty ? "…" : answer)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .lookup(let stack):
             lookupContent(stack)
         case .buddyMessage(_, let message):
@@ -501,18 +730,12 @@ struct RawCapturePanelView: View {
                 }
                 buddyDetails(capture)
             }
-        case .buddyStreaming(let capture, let answer):
+        case .buddyStreaming(_, let answer):
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(answer.isEmpty ? "…" : answer)
-                        .font(.system(size: 15, weight: .regular))
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
-                    Divider()
-                    buddyDetails(capture)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                answerBubble(answer.isEmpty ? "…" : answer)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .buddyError(let capture, let message):
             VStack(alignment: .leading, spacing: 10) {
                 Text("What happened")
@@ -551,7 +774,7 @@ struct RawCapturePanelView: View {
             }
         case .noSelection(let appName, let windowTitle):
             VStack(alignment: .leading, spacing: 8) {
-                Text("Highlight a word or phrase, hold Option + Space, then release.")
+                Text("Hold Option + Space while selecting a word or phrase, then release.")
                 metadataRow("App", appName.isEmpty ? "Unknown" : appName)
                 metadataRow("Window", windowTitle.isEmpty ? "Unknown" : windowTitle)
             }
@@ -564,15 +787,43 @@ struct RawCapturePanelView: View {
         }
     }
 
+    private func answerBubble(_ answer: String) -> some View {
+        Text(answer)
+            .font(.system(size: 15.5, weight: .regular, design: .rounded))
+            .lineSpacing(5)
+            .foregroundStyle(.primary)
+            .textSelection(.enabled)
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 300, alignment: .topLeading)
+            .background(glassCardBackground(cornerRadius: 18))
+    }
+
+    private func glassCardBackground(cornerRadius: CGFloat = 16) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.thinMaterial)
+            .overlay(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.30), Color.white.opacity(0.08), Color.black.opacity(0.04)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.26), lineWidth: 0.8)
+            )
+    }
+
     private func lookupHeader(_ stack: LookupNavigationStack) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             breadcrumb(stack)
             if let node = stack.currentNode {
                 Text(node.term)
-                    .font(.headline)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
                     .lineLimit(2)
                 Text("Depth \(stack.depth) · \(node.sourceLabel)")
-                    .font(.caption)
+                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
             }
         }
@@ -600,15 +851,44 @@ struct RawCapturePanelView: View {
                         onSelectionChanged: { viewModel.selectedAnswerText = $0 },
                         onDoubleClick: { _ in }
                     )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, minHeight: 320, maxHeight: .infinity)
+                    .background(glassCardBackground(cornerRadius: 18))
                 }
-                Divider()
-                VStack(alignment: .leading, spacing: 8) {
-                    metadataRow("Source", node.sourceLabel)
-                    metadataRow("Window", node.windowTitle.isEmpty ? "Unknown" : node.windowTitle)
-                    metadataRow("App", node.appName.isEmpty ? "Unknown" : node.appName)
+                if !node.answer.isEmpty {
+                    followUpComposer
                 }
             }
+        }
+    }
+
+    private var followUpComposer: some View {
+        HStack(spacing: 10) {
+            TextField("Ask a follow-up…", text: $viewModel.followUpQuestion)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13.5, weight: .regular, design: .rounded))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(glassCardBackground(cornerRadius: 16))
+                .onSubmit {
+                    viewModel.requestFollowUp()
+                }
+            Button {
+                viewModel.requestFollowUp()
+            } label: {
+                Text("Ask")
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(
+                        Capsule()
+                            .fill(Color.primary.opacity(0.10))
+                            .overlay(Capsule().stroke(Color.white.opacity(0.28), lineWidth: 0.8))
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.followUpQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .opacity(viewModel.followUpQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
         }
     }
 
@@ -726,10 +1006,10 @@ struct RawCapturePanelView: View {
     private func captureHeader(_ capture: CapturedSelection) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(capture.term)
-                .font(.headline)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
                 .lineLimit(2)
             Text("\(capture.appName)" + sourceSuffix(capture.source))
-                .font(.caption)
+                .font(.system(size: 11.5, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
         }
     }
@@ -739,6 +1019,9 @@ struct RawCapturePanelView: View {
             metadataRow("Window", capture.windowTitle.isEmpty ? "Unknown" : capture.windowTitle)
             metadataRow("App", capture.appName)
             metadataRow("Source", capture.source == .accessibility ? "Accessibility API" : "Clipboard fallback")
+            if let question = capture.question, !question.isEmpty {
+                metadataRow("Question", question)
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Passage")
@@ -757,10 +1040,10 @@ struct RawCapturePanelView: View {
     private func buddyHeader(_ capture: BuddyCaptureContext) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(capture.displayTitle)
-                .font(.headline)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
                 .lineLimit(2)
             Text("\(capture.appName) · Buddy Capture")
-                .font(.caption)
+                .font(.system(size: 11.5, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
         }
     }
@@ -779,7 +1062,8 @@ struct RawCapturePanelView: View {
                                 .stroke(Color.primary.opacity(0.12), lineWidth: 1)
                         )
                     VStack(alignment: .leading, spacing: 6) {
-                        metadataRow("Image", "\(screenshot.pixelWidth)×\(screenshot.pixelHeight)")
+                        metadataRow("Image", "\(screenshot.pixelWidth)×\(screenshot.pixelHeight), \(screenshot.encodedBytes) bytes")
+                        metadataRow("OCR", screenshot.recognizedText.isEmpty ? "No text detected" : "\(screenshot.recognizedText.count) chars")
                         metadataRow("Source", "Buddy Capture")
                     }
                 }
@@ -809,10 +1093,10 @@ struct RawCapturePanelView: View {
     private func metadataRow(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Text(label + ":")
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.caption)
+                .font(.system(size: 11, weight: .regular, design: .rounded))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
         }
@@ -842,7 +1126,7 @@ private struct SelectableAnswerView: NSViewRepresentable {
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
-        textView.font = .systemFont(ofSize: 15)
+        textView.font = NSFont.systemFont(ofSize: 15.5, weight: .regular)
         textView.textColor = .labelColor
         textView.textContainerInset = NSSize(width: 0, height: 2)
         textView.isVerticallyResizable = true
@@ -862,7 +1146,7 @@ private struct SelectableAnswerView: NSViewRepresentable {
         if textView.string != text {
             textView.string = text
         }
-        textView.font = .systemFont(ofSize: 15)
+        textView.font = NSFont.systemFont(ofSize: 15.5, weight: .regular)
         textView.textColor = .labelColor
         textView.delegate = context.coordinator
         textView.onDoubleClickSelection = onDoubleClick

@@ -57,18 +57,34 @@ struct LookupNavigationStack: Equatable {
     }
 
     mutating func pushPending(term rawTerm: String) -> UUID? {
+        pushChild(
+            title: rawTerm,
+            windowTitlePrefix: "Nested lookup from",
+            sourceLabel: "Lexi answer"
+        )
+    }
+
+    mutating func pushFollowUp(question rawQuestion: String) -> UUID? {
+        pushChild(
+            title: rawQuestion,
+            windowTitlePrefix: "Follow-up from",
+            sourceLabel: "Follow-up"
+        )
+    }
+
+    private mutating func pushChild(title rawTitle: String, windowTitlePrefix: String, sourceLabel: String) -> UUID? {
         guard let parent = currentNode else { return nil }
-        let term = rawTerm.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty else { return nil }
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return nil }
         let child = LookupNode(
             id: UUID(),
-            term: term,
+            term: title,
             sourceText: parent.answer,
             answer: "",
             parentId: parent.id,
             appName: "Lexi",
-            windowTitle: "Nested lookup from \(parent.term)",
-            sourceLabel: "Lexi answer"
+            windowTitle: "\(windowTitlePrefix) \(parent.term)",
+            sourceLabel: sourceLabel
         )
         nodesById[child.id] = child
         childIdsByParentId[parent.id, default: []].append(child.id)

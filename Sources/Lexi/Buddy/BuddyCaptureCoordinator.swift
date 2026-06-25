@@ -7,6 +7,7 @@ struct BuddyCaptureContext {
     let appName: String
     let windowTitle: String
     let anchorRect: CGRect?
+    let modeLabel: String
 
     var displayTitle: String {
         question.isEmpty ? "Buddy Capture" : question
@@ -18,8 +19,12 @@ struct BuddyCaptureContext {
             parts.append("Question: \(question)")
         }
         if let screenshot {
-            parts.append("Screenshot: \(screenshot.pixelWidth)×\(screenshot.pixelHeight) region")
+            parts.append("Screenshot: \(screenshot.pixelWidth)×\(screenshot.pixelHeight), \(screenshot.encodedBytes) bytes")
+            if !screenshot.recognizedText.isEmpty {
+                parts.append("OCR: \(screenshot.recognizedText)")
+            }
         }
+        parts.append("Mode: \(modeLabel)")
         return parts.isEmpty ? "Buddy Capture" : parts.joined(separator: "\n")
     }
 }
@@ -30,23 +35,38 @@ final class BuddyCaptureCoordinator {
     var onCaptureReady: ((BuddyCaptureContext) -> Void)?
     var onCaptureCancelled: (() -> Void)?
     var onPermissionsMissing: (([BuddyPermission]) -> Void)?
+    var onMessage: ((String, String) -> Void)?
+    var onActivityChanged: ((BuddyCursorFollowerActivity) -> Void)?
+    var onCursorHint: ((String, TimeInterval) -> Void)?
     var onError: ((String) -> Void)?
     var onInstallFailed: (() -> Void)?
+    var contextualKeytermsProvider: () -> [String] = { [] }
 
     private let hotkeyMonitor = BuddyHotkeyMonitor()
+    private let pushToTalkMonitor = BuddyPushToTalkMonitor()
     private let overlay = BuddyOverlayController()
     private let voiceCapture = BuddyVoiceCapture()
     private var metadata = BuddyWindowMetadata(appName: "Unknown", windowTitle: "")
     private var isCapturing = false
+    private var isQuickCapturing = false
     private var isSelecting = false
+    private var waitsForModifierRelease = false
     private var finalizeTask: Task<Void, Never>?
 
     init() {
         hotkeyMonitor.onBegin = { [weak self] location in
-            self?.begin(at: location)
+            self?.begin(at: location, waitsForModifierRelease: true)
+        }
+        hotkeyMonitor.onEnd = { [weak self] location in
+            self?.finish(at: location)
         }
         overlay.onSelectionFinished = { [weak self] location in
-            self?.finish(at: location)
+            guard let self else { return }
+            if self.waitsForModifierRelease {
+                self.endSelection(at: location)
+            } else {
+                self.finish(at: location)
+            }
         }
         hotkeyMonitor.onCancel = { [weak self] in
             self?.cancel()
@@ -54,15 +74,26 @@ final class BuddyCaptureCoordinator {
         hotkeyMonitor.onInstallFailed = { [weak self] in
             self?.onInstallFailed?()
         }
+        pushToTalkMonitor.onPressed = { [weak self] in
+            self?.beginQuickCapture()
+        }
+        pushToTalkMonitor.onReleased = { [weak self] in
+            self?.finishQuickCapture()
+        }
+        pushToTalkMonitor.onInstallFailed = { [weak self] in
+            self?.onInstallFailed?()
+        }
     }
 
     func start() {
         hotkeyMonitor.start()
+        pushToTalkMonitor.start()
     }
 
     func stop() {
         finalizeTask?.cancel()
         hotkeyMonitor.stop()
+        pushToTalkMonitor.stop()
         cancel()
     }
 
@@ -72,30 +103,109 @@ final class BuddyCaptureCoordinator {
     }
 
     func beginCaptureFromUI() {
-        begin(at: NSEvent.mouseLocation)
+        begin(at: NSEvent.mouseLocation, waitsForModifierRelease: false)
     }
 
-    private func begin(at location: CGPoint) {
+    private func begin(at location: CGPoint, waitsForModifierRelease: Bool) {
         guard isEnabledProvider() else { return }
-        guard !isCapturing else { return }
+        guard !isCapturing, !isQuickCapturing else { return }
 
         finalizeTask?.cancel()
         metadata = currentWindowMetadata()
         isCapturing = true
+        isQuickCapturing = false
         isSelecting = false
+        self.waitsForModifierRelease = waitsForModifierRelease
         overlay.show(at: location)
+        onActivityChanged?(.selecting)
+        onCursorHint?("Drag anywhere on the screen to capture", 3.0)
 
         if BuddyPermissions.status(.microphone).isGranted,
-           BuddyPermissions.status(.speechRecognition).isGranted {
+           AppConfiguration.voiceProvider == .assemblyAI || BuddyPermissions.status(.speechRecognition).isGranted {
             do {
-                try voiceCapture.start { [weak self] transcript in
+                try voiceCapture.start(keyterms: contextualKeytermsProvider()) { [weak self] transcript in
                     self?.overlay.updateTranscript(transcript)
                 }
             } catch {
                 overlay.updateTranscript("Voice unavailable; drag to capture")
             }
         } else {
-            overlay.updateTranscript("Drag to capture; voice is off until Mic + Speech are enabled")
+            overlay.updateTranscript("Drag to capture; voice is off until required permissions are enabled")
+        }
+    }
+
+    private func beginQuickCapture() {
+        guard isEnabledProvider() else { return }
+        guard !isCapturing, !isQuickCapturing else { return }
+        guard BuddyPermissions.status(.microphone).isGranted else {
+            onError?("Microphone permission is required for push-to-talk Buddy Capture.")
+            return
+        }
+        guard AppConfiguration.voiceProvider == .assemblyAI || BuddyPermissions.status(.speechRecognition).isGranted else {
+            onError?("Speech Recognition permission is required for Apple Speech. Switch to AssemblyAI after configuring the proxy, or enable Speech Recognition.")
+            return
+        }
+
+        finalizeTask?.cancel()
+        metadata = currentWindowMetadata()
+        isQuickCapturing = true
+        onActivityChanged?(.listening)
+        onMessage?("Listening", "Speak your question, then release Control + Option.")
+        do {
+            try voiceCapture.start(keyterms: contextualKeytermsProvider()) { [weak self] transcript in
+                self?.onMessage?("Listening", transcript.isEmpty ? "Listening…" : transcript)
+            }
+        } catch {
+            isQuickCapturing = false
+            onActivityChanged?(.error)
+            onError?(error.localizedDescription)
+        }
+    }
+
+    private func finishQuickCapture() {
+        guard isQuickCapturing else { return }
+        isQuickCapturing = false
+        let captureMetadata = metadata
+        onActivityChanged?(.working)
+        onMessage?("Finalizing", "Transcribing and capturing your current screen context…")
+        finalizeTask?.cancel()
+        finalizeTask = Task { [weak self] in
+            guard let self else { return }
+            let question = await self.voiceCapture.stop()
+            guard !Task.isCancelled else { return }
+
+            var screenshot: RegionScreenshot?
+            do {
+                if let focusedWindow = try await RegionScreenshotCapture.captureFocusedWindow() {
+                    screenshot = focusedWindow
+                } else {
+                    screenshot = try await RegionScreenshotCapture.captureCursorScreen()
+                }
+            } catch {
+                if question.isEmpty {
+                    await MainActor.run {
+                        self.onActivityChanged?(.error)
+                        self.onError?(error.localizedDescription)
+                    }
+                    return
+                }
+            }
+
+            await MainActor.run {
+                guard !question.isEmpty || screenshot != nil else {
+                    self.onActivityChanged?(.idle)
+                    self.onCaptureCancelled?()
+                    return
+                }
+                self.onCaptureReady?(BuddyCaptureContext(
+                    question: question,
+                    screenshot: screenshot,
+                    appName: captureMetadata.appName,
+                    windowTitle: captureMetadata.windowTitle,
+                    anchorRect: screenshot?.sourceRect,
+                    modeLabel: "Quick Push-to-Talk"
+                ))
+            }
         }
     }
 
@@ -131,6 +241,8 @@ final class BuddyCaptureCoordinator {
         let captureMetadata = metadata
         hotkeyMonitor.completeActiveCapture()
         isCapturing = false
+        waitsForModifierRelease = false
+        onActivityChanged?(.working)
 
         finalizeTask?.cancel()
         finalizeTask = Task { [weak self] in
@@ -149,6 +261,7 @@ final class BuddyCaptureCoordinator {
                 if question.isEmpty {
                     await MainActor.run {
                         self.overlay.hide()
+                        self.onActivityChanged?(.error)
                         self.onError?(error.localizedDescription)
                     }
                     return
@@ -158,6 +271,7 @@ final class BuddyCaptureCoordinator {
             await MainActor.run {
                 self.overlay.hide()
                 guard !question.isEmpty || screenshot != nil else {
+                    self.onActivityChanged?(.idle)
                     self.onCaptureCancelled?()
                     return
                 }
@@ -166,7 +280,8 @@ final class BuddyCaptureCoordinator {
                     screenshot: screenshot,
                     appName: captureMetadata.appName,
                     windowTitle: captureMetadata.windowTitle,
-                    anchorRect: region
+                    anchorRect: region,
+                    modeLabel: "Precise Region"
                 ))
             }
         }
@@ -176,14 +291,19 @@ final class BuddyCaptureCoordinator {
         finalizeTask?.cancel()
         finalizeTask = nil
         isCapturing = false
+        isQuickCapturing = false
         isSelecting = false
+        waitsForModifierRelease = false
         voiceCapture.cancel()
         overlay.hide()
+        onActivityChanged?(.idle)
         onCaptureCancelled?()
     }
 
     private func missingBuddyPermissions() -> [BuddyPermission] {
-        [.screenRecording, .microphone, .speechRecognition].filter { !BuddyPermissions.status($0).isGranted }
+        BuddyPermissions.requiredPermissions
+            .filter { $0 != .accessibility }
+            .filter { !BuddyPermissions.status($0).isGranted }
     }
 
     private func currentWindowMetadata() -> BuddyWindowMetadata {

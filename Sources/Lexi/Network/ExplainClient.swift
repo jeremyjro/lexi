@@ -13,6 +13,12 @@ struct ProxyHealth: Decodable {
     let jsonBodyLimit: String?
     let anthropicApiKeyConfigured: Bool?
     let proxyTokenConfigured: Bool?
+    let assemblyAIConfigured: Bool?
+    let elevenLabsConfigured: Bool?
+    let perplexityConfigured: Bool?
+    let researchProvider: String?
+    let researchMode: String?
+    let perplexityModel: String?
 }
 
 struct ProxyTiming: Decodable {
@@ -21,12 +27,25 @@ struct ProxyTiming: Decodable {
 }
 
 final class ExplainClient {
+    private static let warmupLock = NSLock()
+    private static var warmedHosts = Set<String>()
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 180
+        configuration.waitsForConnectivity = true
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        return URLSession(configuration: configuration)
+    }()
+
     private let proxyBaseURL: URL
     private let proxyToken: String?
 
     init(configuration: AppConfiguration = .current) {
         proxyBaseURL = configuration.proxyBaseURL
         proxyToken = configuration.proxyToken
+        warmUpProxyConnectionIfNeeded()
     }
 
     var baseURLDescription: String {
@@ -43,10 +62,11 @@ final class ExplainClient {
         request.timeoutInterval = 3
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await Self.session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw ExplainClientError.invalidResponse
             }
+            LexiDiagnostics.recordHTTPStatus(httpResponse.statusCode)
             guard (200..<300).contains(httpResponse.statusCode) else {
                 throw ExplainClientError.httpStatus(httpResponse.statusCode)
             }
@@ -60,11 +80,12 @@ final class ExplainClient {
 
     func explain(
         _ capture: CapturedSelection,
+        sessionContext: String,
         onDelta: @escaping @MainActor (String, String) -> Void,
         onTiming: @escaping @MainActor (ProxyTiming) -> Void
     ) async throws -> String {
         try await performExplain(
-            payload: ExplainPayload(capture: capture),
+            payload: ExplainPayload(capture: capture, sessionContext: sessionContext),
             onDelta: onDelta,
             onTiming: onTiming
         )
@@ -76,6 +97,8 @@ final class ExplainClient {
         question: String,
         appName: String,
         windowTitle: String,
+        ocrText: String,
+        sessionContext: String,
         onDelta: @escaping @MainActor (String, String) -> Void,
         onTiming: @escaping @MainActor (ProxyTiming) -> Void
     ) async throws -> String {
@@ -89,7 +112,9 @@ final class ExplainClient {
             imageMediaType: imageBase64 == nil ? nil : imageMediaType,
             question: trimmedQuestion,
             windowTitle: windowTitle,
-            appName: appName
+            appName: appName,
+            ocrText: ocrText,
+            sessionContext: sessionContext
         )
 
         return try await performExplain(payload: payload, onDelta: onDelta, onTiming: onTiming)
@@ -98,6 +123,7 @@ final class ExplainClient {
     func explainNested(
         term: String,
         in stack: LookupNavigationStack,
+        sessionContext: String,
         onDelta: @escaping @MainActor (String, String) -> Void,
         onTiming: @escaping @MainActor (ProxyTiming) -> Void
     ) async throws -> String {
@@ -110,6 +136,40 @@ final class ExplainClient {
             passage: parent.answer,
             windowTitle: parent.windowTitle,
             appName: "Lexi",
+            sessionContext: sessionContext,
+            lineage: ExplainLineagePayload(
+                rootTerm: root.term,
+                rootSourceText: root.sourceText,
+                parentTerm: parent.term,
+                parentAnswer: parent.answer,
+                depth: stack.depth + 1
+            )
+        )
+
+        return try await performExplain(payload: payload, onDelta: onDelta, onTiming: onTiming)
+    }
+
+    func explainFollowUp(
+        question: String,
+        in stack: LookupNavigationStack,
+        sessionContext: String,
+        onDelta: @escaping @MainActor (String, String) -> Void,
+        onTiming: @escaping @MainActor (ProxyTiming) -> Void
+    ) async throws -> String {
+        guard let root = stack.rootNode, let parent = stack.currentNode else {
+            throw ExplainClientError.invalidResponse
+        }
+
+        let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuestion.isEmpty else {
+            throw ExplainClientError.invalidResponse
+        }
+
+        let payload = ExplainPayload(
+            followUpQuestion: trimmedQuestion,
+            windowTitle: parent.windowTitle,
+            appName: parent.appName,
+            sessionContext: sessionContext,
             lineage: ExplainLineagePayload(
                 rootTerm: root.term,
                 rootSourceText: root.sourceText,
@@ -129,18 +189,19 @@ final class ExplainClient {
     ) async throws -> String {
         var request = URLRequest(url: endpoint("explain"))
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = payload.mode == "buddy" ? 120 : 45
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyProxyAuthorization(to: &request)
         request.httpBody = try JSONEncoder().encode(payload)
         if let count = request.httpBody?.count {
             print("Lexi /explain request bytes: \(count)")
+            LexiDiagnostics.recordExplainRequest(bytes: count)
         }
 
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (bytes, response) = try await URLSession.shared.bytes(for: request)
+            (bytes, response) = try await Self.session.bytes(for: request)
         } catch {
             throw ExplainClientError.proxyUnavailable(proxyBaseURL.absoluteString)
         }
@@ -148,6 +209,7 @@ final class ExplainClient {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ExplainClientError.invalidResponse
         }
+        LexiDiagnostics.recordHTTPStatus(httpResponse.statusCode)
 
         guard (200..<300).contains(httpResponse.statusCode) else {
             var errorBody = Data()
@@ -211,6 +273,27 @@ final class ExplainClient {
         request.setValue("Bearer \(proxyToken)", forHTTPHeaderField: "Authorization")
     }
 
+    private func warmUpProxyConnectionIfNeeded() {
+        guard let host = proxyBaseURL.host else { return }
+        Self.warmupLock.lock()
+        let shouldWarm = !Self.warmedHosts.contains(host)
+        if shouldWarm {
+            Self.warmedHosts.insert(host)
+        }
+        Self.warmupLock.unlock()
+        guard shouldWarm else { return }
+
+        var components = URLComponents(url: proxyBaseURL, resolvingAgainstBaseURL: false)
+        components?.path = "/health"
+        components?.query = nil
+        components?.fragment = nil
+        guard let warmupURL = components?.url else { return }
+        var request = URLRequest(url: warmupURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+        Self.session.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
     private func decode<T: Decodable>(_ type: T.Type, from data: String) throws -> T {
         guard let payload = data.data(using: .utf8) else {
             throw ExplainClientError.invalidResponse
@@ -224,6 +307,7 @@ private struct ExplainPayload: Encodable {
     let passage: String
     let windowTitle: String
     let appName: String
+    let sessionContext: String?
     let lineage: ExplainLineagePayload?
     // Buddy (hold-to-ask) fields. Optional, so the synthesized encoder omits them
     // for the text and nested paths — leaving those requests byte-for-byte unchanged.
@@ -231,41 +315,62 @@ private struct ExplainPayload: Encodable {
     let image: String?
     let imageMediaType: String?
     let question: String?
+    let ocrText: String?
 
-    init(capture: CapturedSelection) {
+    init(capture: CapturedSelection, sessionContext: String) {
         term = capture.term
         passage = capture.passage
         windowTitle = capture.windowTitle
         appName = capture.appName
+        self.sessionContext = sessionContext.isEmpty ? nil : sessionContext
         lineage = nil
         mode = nil
         image = nil
         imageMediaType = nil
-        question = nil
+        question = capture.question
+        ocrText = nil
     }
 
-    init(term: String, passage: String, windowTitle: String, appName: String, lineage: ExplainLineagePayload?) {
+    init(term: String, passage: String, windowTitle: String, appName: String, sessionContext: String, lineage: ExplainLineagePayload?) {
         self.term = term
         self.passage = passage
         self.windowTitle = windowTitle
         self.appName = appName
+        self.sessionContext = sessionContext.isEmpty ? nil : sessionContext
         self.lineage = lineage
         mode = nil
         image = nil
         imageMediaType = nil
         question = nil
+        ocrText = nil
     }
 
-    init(buddyImage: String?, imageMediaType: String?, question: String, windowTitle: String, appName: String) {
+    init(followUpQuestion: String, windowTitle: String, appName: String, sessionContext: String, lineage: ExplainLineagePayload) {
         term = ""
         passage = ""
         self.windowTitle = windowTitle
         self.appName = appName
+        self.sessionContext = sessionContext.isEmpty ? nil : sessionContext
+        self.lineage = lineage
+        mode = "followup"
+        image = nil
+        imageMediaType = nil
+        question = followUpQuestion
+        ocrText = nil
+    }
+
+    init(buddyImage: String?, imageMediaType: String?, question: String, windowTitle: String, appName: String, ocrText: String, sessionContext: String) {
+        term = ""
+        passage = ""
+        self.windowTitle = windowTitle
+        self.appName = appName
+        self.sessionContext = sessionContext.isEmpty ? nil : sessionContext
         lineage = nil
         mode = "buddy"
         image = buddyImage
         self.imageMediaType = imageMediaType
         self.question = question
+        self.ocrText = ocrText.isEmpty ? nil : ocrText
     }
 }
 

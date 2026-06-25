@@ -13,6 +13,19 @@ struct CapturedSelection {
     let appName: String
     let anchorRect: CGRect?
     let source: Source
+    let question: String?
+
+    func withQuestion(_ question: String) -> CapturedSelection {
+        CapturedSelection(
+            term: term,
+            passage: passage,
+            windowTitle: windowTitle,
+            appName: appName,
+            anchorRect: anchorRect,
+            source: source,
+            question: question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : question.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
 }
 
 enum SelectionCaptureStatus {
@@ -66,7 +79,8 @@ final class SelectionCapture {
             windowTitle: windowTitle,
             appName: appName,
             anchorRect: anchorRect,
-            source: .accessibility
+            source: .accessibility,
+            question: nil
         ))
     }
 
@@ -118,7 +132,8 @@ final class SelectionCapture {
             windowTitle: windowTitle,
             appName: appName,
             anchorRect: nil,
-            source: .clipboardFallback
+            source: .clipboardFallback,
+            question: nil
         ))
     }
 
