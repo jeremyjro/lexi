@@ -4,6 +4,14 @@ import Foundation
 @MainActor
 final class ElevenLabsTTSClient {
     private var audioPlayer: AVAudioPlayer?
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 90
+        config.urlCache = nil
+        config.httpCookieStorage = nil
+        return URLSession(configuration: config)
+    }()
 
     var isPlaying: Bool {
         audioPlayer?.isPlaying ?? false
@@ -30,7 +38,7 @@ final class ElevenLabsTTSClient {
             ]
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
             throw ExplainClientError.proxyError(code: "tts_unavailable", message: "Lexi read-aloud is unavailable. Check ElevenLabs settings on the proxy.")
         }

@@ -9,6 +9,9 @@ final class BuddyVoiceCapture {
     private var finalTranscriptContinuation: CheckedContinuation<String, Never>?
     private var finalTranscriptFallbackTask: Task<Void, Never>?
     private var startGeneration = UUID()
+    private var captureStartedAt: CFAbsoluteTime = 0
+    private var stopRequestedAt: CFAbsoluteTime = 0
+    private var hasLoggedFirstPartial = false
 
     var isRecording: Bool {
         audioEngine.isRunning
@@ -17,6 +20,9 @@ final class BuddyVoiceCapture {
     func start(keyterms: [String] = [], onTranscript: @escaping @MainActor (String) -> Void) throws {
         stopImmediately()
         transcript = ""
+        captureStartedAt = CFAbsoluteTimeGetCurrent()
+        stopRequestedAt = 0
+        hasLoggedFirstPartial = false
         let generation = UUID()
         startGeneration = generation
 
@@ -36,7 +42,8 @@ final class BuddyVoiceCapture {
                 try await start(provider: provider, keyterms: keyterms, generation: generation, onTranscript: onTranscript)
             } catch {
                 guard self.startGeneration == generation else { return }
-                if AppConfiguration.voiceProvider == .assemblyAI {
+                if AppConfiguration.voiceProvider == .assemblyAI,
+                   BuddyPermissions.status(.speechRecognition).isGranted {
                     do {
                         let provider = BuddyTranscriptionProviderFactory.makeFallbackProvider()
                         try await start(provider: provider, keyterms: keyterms, generation: generation, onTranscript: onTranscript)
@@ -53,11 +60,13 @@ final class BuddyVoiceCapture {
 
     func stop() async -> String {
         startGeneration = UUID()
+        stopRequestedAt = CFAbsoluteTimeGetCurrent()
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         transcriptionSession?.requestFinalTranscript()
 
         let fallbackDelay = transcriptionSession?.finalTranscriptFallbackDelaySeconds ?? 0.35
+        print("Lexi voice stop requested providerFallback=\(String(format: "%.2f", fallbackDelay))s transcriptChars=\(transcript.count)")
         finalTranscriptFallbackTask?.cancel()
         finalTranscriptFallbackTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(fallbackDelay * 1_000_000_000))
@@ -80,10 +89,15 @@ final class BuddyVoiceCapture {
         generation: UUID,
         onTranscript: @escaping @MainActor (String) -> Void
     ) async throws {
+        print("Lexi voice provider starting provider=\(provider.displayName) keyterms=\(keyterms.count)")
         let session = try await provider.startStreamingSession(
             keyterms: keyterms,
             onTranscriptUpdate: { [weak self] text in
                 guard let self else { return }
+                if !text.isEmpty && !self.hasLoggedFirstPartial {
+                    self.hasLoggedFirstPartial = true
+                    print("Lexi voice first partial provider=\(provider.displayName) elapsed=\(self.elapsedMsSinceCaptureStart())ms chars=\(text.count)")
+                }
                 self.transcript = text
                 onTranscript(text)
             },
@@ -98,16 +112,19 @@ final class BuddyVoiceCapture {
             session.cancel()
             return
         }
+        print("Lexi voice provider ready provider=\(provider.displayName) elapsed=\(elapsedMsSinceCaptureStart())ms")
         transcriptionSession = session
 
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
+        let bufferSize = AVAudioFrameCount(AppConfiguration.voiceAudioBufferSizeFrames)
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: format) { [weak self] buffer, _ in
             self?.transcriptionSession?.appendAudioBuffer(buffer)
         }
         audioEngine.prepare()
         try audioEngine.start()
+        print("Lexi voice audio engine started provider=\(provider.displayName) bufferFrames=\(bufferSize) sampleRate=\(Int(format.sampleRate)) elapsed=\(elapsedMsSinceCaptureStart())ms")
     }
 
     private func finishFinalTranscript(_ text: String) {
@@ -115,6 +132,9 @@ final class BuddyVoiceCapture {
         finalTranscriptFallbackTask = nil
         let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         transcript = result
+        if stopRequestedAt > 0 {
+            print("Lexi voice final transcript stopToFinal=\(elapsedMs(since: stopRequestedAt))ms total=\(elapsedMsSinceCaptureStart())ms chars=\(result.count)")
+        }
         finalTranscriptContinuation?.resume(returning: result)
         finalTranscriptContinuation = nil
         transcriptionSession?.cancel()
@@ -124,6 +144,15 @@ final class BuddyVoiceCapture {
     private func finishWithError(_ error: Error) {
         print("Lexi voice transcription failed: \(error.localizedDescription)")
         finishFinalTranscript(transcript)
+    }
+
+    private func elapsedMsSinceCaptureStart() -> Int {
+        elapsedMs(since: captureStartedAt)
+    }
+
+    private func elapsedMs(since start: CFAbsoluteTime) -> Int {
+        guard start > 0 else { return 0 }
+        return Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
     }
 
     private func stopImmediately() {

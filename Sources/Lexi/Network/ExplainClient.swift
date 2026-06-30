@@ -14,6 +14,7 @@ struct ProxyHealth: Decodable {
     let anthropicApiKeyConfigured: Bool?
     let proxyTokenConfigured: Bool?
     let assemblyAIConfigured: Bool?
+    let assemblyAITokenTimeoutMs: Int?
     let elevenLabsConfigured: Bool?
     let perplexityConfigured: Bool?
     let researchProvider: String?
@@ -24,6 +25,23 @@ struct ProxyHealth: Decodable {
 struct ProxyTiming: Decodable {
     let proxyTtftMs: Int?
     let anthropicTtftMs: Int?
+}
+
+private struct ProxyMeta: Decodable {
+    let model: String?
+    let route: String?
+    let latencyTier: String?
+    let researchUsed: Bool?
+    let researchProvider: String?
+}
+
+private struct ProxyDone: Decodable {
+    let totalMs: Int?
+    let outputCharacters: Int?
+    let route: String?
+    let latencyTier: String?
+    let researchUsed: Bool?
+    let researchProvider: String?
 }
 
 final class ExplainClient {
@@ -182,19 +200,64 @@ final class ExplainClient {
         return try await performExplain(payload: payload, onDelta: onDelta, onTiming: onTiming)
     }
 
+    func compose(
+        instruction: String,
+        context: ActiveTextCompositionContext,
+        sessionContext: String,
+        onDelta: @escaping @MainActor (String, String) -> Void,
+        onTiming: @escaping @MainActor (ProxyTiming) -> Void
+    ) async throws -> String {
+        let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInstruction.isEmpty else {
+            throw ExplainClientError.invalidResponse
+        }
+
+        let payload = ComposePayload(
+            instruction: trimmedInstruction,
+            context: context,
+            sessionContext: sessionContext
+        )
+        return try await performStreaming(
+            endpointPath: "compose",
+            requestLabel: "/compose",
+            timeout: 90,
+            payload: payload,
+            onDelta: onDelta,
+            onTiming: onTiming
+        )
+    }
+
     private func performExplain(
         payload: ExplainPayload,
         onDelta: @escaping @MainActor (String, String) -> Void,
         onTiming: @escaping @MainActor (ProxyTiming) -> Void
     ) async throws -> String {
-        var request = URLRequest(url: endpoint("explain"))
+        try await performStreaming(
+            endpointPath: "explain",
+            requestLabel: "/explain",
+            timeout: payload.mode == "buddy" ? 120 : 45,
+            payload: payload,
+            onDelta: onDelta,
+            onTiming: onTiming
+        )
+    }
+
+    private func performStreaming<Payload: Encodable>(
+        endpointPath: String,
+        requestLabel: String,
+        timeout: TimeInterval,
+        payload: Payload,
+        onDelta: @escaping @MainActor (String, String) -> Void,
+        onTiming: @escaping @MainActor (ProxyTiming) -> Void
+    ) async throws -> String {
+        var request = URLRequest(url: endpoint(endpointPath))
         request.httpMethod = "POST"
-        request.timeoutInterval = payload.mode == "buddy" ? 120 : 45
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyProxyAuthorization(to: &request)
         request.httpBody = try JSONEncoder().encode(payload)
         if let count = request.httpBody?.count {
-            print("Lexi /explain request bytes: \(count)")
+            print("Lexi \(requestLabel) request bytes: \(count)")
             LexiDiagnostics.recordExplainRequest(bytes: count)
         }
 
@@ -228,24 +291,21 @@ final class ExplainClient {
         for try await byte in bytes {
             guard !Task.isCancelled else { throw CancellationError() }
             let events = parser.consume(byte: byte)
-            for event in events {
-                switch event.name {
-                case "delta":
-                    let delta = try decode(SSEDelta.self, from: event.data).text
-                    answer += delta
-                    await onDelta(delta, answer)
-                case "timing":
-                    await onTiming(try decode(ProxyTiming.self, from: event.data))
-                case "error":
-                    let error = try decode(SSEError.self, from: event.data)
-                    throw ExplainClientError.proxyError(code: error.code, message: error.message)
-                default:
-                    continue
-                }
-            }
+            answer = try await handle(events: events, accumulatedAnswer: answer, onDelta: onDelta, onTiming: onTiming)
         }
 
-        for event in parser.finish() {
+        answer = try await handle(events: parser.finish(), accumulatedAnswer: answer, onDelta: onDelta, onTiming: onTiming)
+        return answer.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func handle(
+        events: [SSEEvent],
+        accumulatedAnswer: String,
+        onDelta: @escaping @MainActor (String, String) -> Void,
+        onTiming: @escaping @MainActor (ProxyTiming) -> Void
+    ) async throws -> String {
+        var answer = accumulatedAnswer
+        for event in events {
             switch event.name {
             case "delta":
                 let delta = try decode(SSEDelta.self, from: event.data).text
@@ -253,6 +313,25 @@ final class ExplainClient {
                 await onDelta(delta, answer)
             case "timing":
                 await onTiming(try decode(ProxyTiming.self, from: event.data))
+            case "meta":
+                let meta = try decode(ProxyMeta.self, from: event.data)
+                LexiDiagnostics.recordProxyMeta(
+                    model: meta.model,
+                    route: meta.route,
+                    latencyTier: meta.latencyTier,
+                    researchUsed: meta.researchUsed,
+                    researchProvider: meta.researchProvider
+                )
+            case "done":
+                let done = try decode(ProxyDone.self, from: event.data)
+                LexiDiagnostics.recordProxyDone(
+                    totalMs: done.totalMs,
+                    outputCharacters: done.outputCharacters,
+                    route: done.route,
+                    latencyTier: done.latencyTier,
+                    researchUsed: done.researchUsed,
+                    researchProvider: done.researchProvider
+                )
             case "error":
                 let error = try decode(SSEError.self, from: event.data)
                 throw ExplainClientError.proxyError(code: error.code, message: error.message)
@@ -260,8 +339,7 @@ final class ExplainClient {
                 continue
             }
         }
-
-        return answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        return answer
     }
 
     private func endpoint(_ path: String) -> URL {
@@ -299,6 +377,26 @@ final class ExplainClient {
             throw ExplainClientError.invalidResponse
         }
         return try JSONDecoder().decode(T.self, from: payload)
+    }
+}
+
+private struct ComposePayload: Encodable {
+    let instruction: String
+    let selectedText: String
+    let surroundingText: String
+    let currentText: String
+    let windowTitle: String
+    let appName: String
+    let sessionContext: String?
+
+    init(instruction: String, context: ActiveTextCompositionContext, sessionContext: String) {
+        self.instruction = instruction
+        selectedText = context.selectedText
+        surroundingText = context.surroundingText
+        currentText = context.currentText
+        windowTitle = context.windowTitle
+        appName = context.appName
+        self.sessionContext = sessionContext.isEmpty ? nil : sessionContext
     }
 }
 

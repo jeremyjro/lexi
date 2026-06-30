@@ -999,3 +999,381 @@ A beginner might ask Claude to “search harder.” The expert move is adding a 
 ### Step 9 — The Transfer: Lessons That Apply Everywhere
 
 When a system guesses too well, that is still a bug. Prediction is not evidence. For high-accuracy workflows, separate “find the facts” from “explain the facts.”
+
+## 2026-06-25 — Turning Lexi from wrapper into context infrastructure
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We started from the uncomfortable truth: Lexi was useful, but the backend still looked too much like a nice Mac wrapper around Claude. The strategic move was not to pretend we can out-train Anthropic. The better move was to own the layers Claude does not own: Jeremy's laptop context, Jeremy's repeated questions, Jeremy's workflow data, and the routing logic that decides whether an answer should be fast, researched, personal, visual, or action-oriented.
+
+So we wrote the roadmap first, then implemented the first infrastructure pieces. The doc gives Lexi a north star. The code gives that north star its first rails: an inference route planner, route telemetry, durable local events, a lightweight local context sampler, and lexical retrieval from prior Lexi interactions.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not jump straight into fine-tuning. That would be like buying a race engine before knowing whether the car has wheels. Fine-tuning only makes sense once Lexi has examples, labels, and evals. We also did not build a full vector database or a GPU inference stack today. Those are real future pieces, but they would add complexity before the product has enough data to justify them.
+
+The rejected shortcut was “just make the prompt smarter.” Better prompts help, but they do not create a moat. A moat comes from owned data, retrieval, feedback, and latency control.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The roadmap describes the whole house. The implementation poured the foundation. The proxy now creates an `InferencePlan` for each request, which is the start of a real orchestration layer. The Mac app now records completed interactions locally, which is the start of a data layer. The app also samples active app/window context locally, which is the start of a context daemon. Finally, old Lexi answers can be retrieved lexically and included in future inference context, which is the first tiny version of personal memory retrieval.
+
+The order matters. You cannot fine-tune before you collect data. You cannot route intelligently before you name the routes. You cannot personalize before you remember. This work puts those prerequisites in place.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+We used JSONL files instead of SQLite or a vector database for the first data store because JSONL is boring in the best way. Each event is one line. It is easy to append, inspect, back up, and migrate. We used TypeScript route objects in the proxy because the backend already lives there and because routing belongs before model calls. We used macOS `NSWorkspace` and window metadata for lightweight context because it gives useful signal without screenshotting the user by default.
+
+Those choices are intentionally modest. This is infrastructure scaffolding, not a science project.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized building durable seams. The route planner is not yet an ML classifier. The memory retrieval is lexical, not embedding-based. The context sampler records app/window changes, not full page content. These are weaker than the eventual versions, but they are safe, fast, and validate the architecture.
+
+The sacrifice is intelligence depth today. The benefit is that the system now has places where deeper intelligence can be plugged in later without rewriting everything.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main implementation snag was TypeScript narrowing. The first version of the research helper used a type predicate, which made the route planner's false branch narrow the request to `never`. That is TypeScript saying, “based on your logic, this code can never run,” even though we knew it could. The fix was to make the helper return a plain boolean and keep type narrowing explicit.
+
+This is a good example of infrastructure work: sometimes the hard part is not the feature but making the shape of the system precise enough that the compiler agrees.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The next danger is collecting lots of local data without a retrieval/eval discipline. Data alone is not a moat; useful, structured, retrievable data is. Another pitfall is turning every request into deep research. That will make Lexi accurate but slow. The product needs both lanes: fast answers for common context and deep research for ambiguous facts.
+
+Also watch privacy. The moment Lexi starts seeing more of the laptop, trust becomes the product.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might think the moat is “use a better model.” The senior view is that the model is only one ingredient. The recipe is context selection, memory, routing, evaluation, and latency. The non-obvious thing is that the first defensible model is not a neural network. It is the data model: what Lexi chooses to remember and how it retrieves it.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When you are building on top of a powerful platform, do not compete with the platform where it is strongest. Own the surrounding workflow. Shopify did not need to own Visa. Uber did not need to own GPS satellites. Lexi does not need to own Claude yet. It needs to own the private context layer that makes Claude useful in a way no generic chatbot can match.
+
+## 2026-06-25 — Active Composition: writing directly into the user's text box
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We turned your idea into a separate product mode instead of jamming it into the existing explanation panel. The old Lexi loop was “highlight text, ask what it means, show answer in Lexi.” The new loop is “click into a text field, speak what you want written, stream the answer into the field.” Those are different jobs, so they needed different routing, prompting, and insertion behavior.
+
+The first implementation uses the existing Option+Space voice flow because that is already the muscle memory. If there is selected text and the spoken question sounds like explanation, Lexi still explains. If the spoken command sounds like writing — write, draft, generate, create, model, outline, rewrite — Lexi composes into the active editor.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not start with app-specific integrations for Notion, Google Docs, Obsidian, Slack, and every editor. That would be too slow and fragile. We also did not use direct Accessibility value-setting as the only insertion method because many modern editors are web views and do not expose clean writable values.
+
+The pragmatic first version uses pasteboard streaming: Lexi receives model deltas, temporarily puts each delta on the clipboard, synthesizes Command+V, and restores the clipboard afterward. It is not perfect, but it is the most universal first bridge into arbitrary text boxes.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+There are four pieces. The context capturer asks macOS, “what app and text field is focused?” The intent detector asks, “is this a writing command or a reading question?” The proxy `/compose` endpoint asks Claude for only the text that should be inserted. The streaming inserter pastes each generated chunk into the active editor.
+
+The key is that the Lexi panel stays out of the way. If the panel appeared, it might steal focus, and then Lexi would paste into itself instead of your note.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+We used macOS Accessibility to detect the active text target and capture surrounding context. We used the existing voice transcription path because the product already knows how to listen while Option+Space is held. We used SSE streaming from the proxy because Lexi already has a robust streaming model path. We used pasteboard insertion because it works across more apps than direct text mutation.
+
+This is a classic wedge: build the cross-app primitive first, then specialize later where needed.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized universality and speed of implementation. The tradeoff is that pasteboard streaming can create lots of undo steps and temporarily owns the clipboard. Direct native insertion would be cleaner in some apps, but less universal. App-specific APIs would be best in a few apps, but would not solve the general product idea.
+
+The current version is good enough to test whether the workflow feels magical. It is not the final insertion engine.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main design mess was deciding when Option+Space should explain versus write. If we made every voice prompt compose, we would break the reading assistant. If we made every selection explain, we would lose rewrite/generate workflows. The compromise is a simple intent detector. It is heuristic, not intelligent yet, but it protects the existing product while opening the new mode.
+
+Another subtle issue is focus. The whole feature depends on not stealing focus from the text editor. That is why composition uses cursor hints, not the normal Lexi answer card.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The biggest pitfall is assuming every app handles synthetic paste the same way. Google Docs, Notion, Slack, Obsidian, native TextEdit, and web forms may all behave differently. This needs hands-on testing in each major target. The second pitfall is undo behavior: streaming chunk-by-chunk may create many undo states. Later, we may want chunk coalescing or an “insert on completion” mode.
+
+Also, never allow this in password fields or sensitive secure inputs.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner would think the feature is “call Claude and paste the answer.” The senior view is that the hard part is routing and focus. The model is easy. The difficult part is knowing when the user wants writing vs explanation, preserving the active app's focus, inserting text universally, and not damaging trust by pasting in the wrong place.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Great AI products do not just answer; they land output where work actually happens. The interface shift from “chat response” to “native insertion” is the product insight. In any workflow, ask: where does the user ultimately need the output to live? Build the AI so it appears there directly.
+
+## 2026-06-25 — Voice latency pass from Freeflow/Wispr Flow analysis
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We used Freeflow as a practical benchmark for the part of Lexi that matters most for personal agents: the voice loop. The lesson was not “copy Freeflow wholesale.” The lesson was to identify where Freeflow is latency-oriented and port the low-risk ideas into Lexi's existing architecture.
+
+The changes focused on the path from hotkey press to first useful output: faster audio chunks, faster transcript finalization, less startup overhead for realtime transcription, and better timing logs.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not rewrite Lexi's audio stack around `AVCaptureSession` yet. Freeflow has a more advanced recorder, but Lexi's current `AVAudioEngine` path is simpler and already supports streaming providers. A rewrite would be higher risk than necessary for a first latency pass.
+
+We also did not add Groq Whisper upload transcription as the main path. Freeflow uses Groq-hosted Whisper models, not a magical fine-tuned Wispr model. Upload transcription can be fast, but it is still end-of-recording transcription. For short agent commands, realtime streaming remains the better default.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+Freeflow separates the pipeline into capture, transcription, context, cleanup, and paste. Lexi already has similar seams: `BuddyVoiceCapture`, `BuddyTranscriptionProvider`, the local proxy, and `/compose` or `/explain` streaming. We improved the seams instead of replacing them.
+
+The new flow is: start voice capture, use a smaller audio tap buffer, open the provider session with better diagnostics, stream partial transcript, shorten AssemblyAI final fallback, then route into compose/explain.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+The main tool was measurement. Before chasing model choices, we added logs for provider startup, audio engine startup, first partial transcript, stop request, and final transcript. Latency work without phase timing is just vibes.
+
+We kept AssemblyAI as the realtime provider because Lexi already supports it. We optimized around it by reusing provider state, prewarming a temporary token, and bounding token fetch time.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized responsiveness over perfect final transcript formatting. Shortening AssemblyAI fallback from 2.8s to 1.2s means Lexi may sometimes proceed with the latest partial instead of waiting for a fully formatted final. For voice commands, that is usually the right tradeoff. If you are dictating a polished paragraph, you may want a different lane later.
+
+We also reduced the audio buffer from 4096 to 1024 frames. That improves responsiveness but slightly increases callback frequency.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main subtlety was token prewarming. A naive cache could accidentally reuse a temporary AssemblyAI token across sessions if the provider treats the token as session-scoped. The safer design is a one-shot prewarm: fetch a token ahead of time, consume it once, and then clear it.
+
+Another subtlety is measurement origin. Lexi's earlier hotkey timing was closer to release-time than press-time for one path, which makes latency look better than it feels. We changed that so future logs are more honest.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+Do not blindly optimize only the model. The user's felt latency is the sum of hotkey handling, mic startup, STT first partial, transcript finalization, request routing, model first token, and insertion. A faster model cannot fix a slow finalization delay.
+
+Also, do not add transcript cleanup into the agent-command path until it is proven necessary. Cleanup is useful for dictation, but it adds a network hop and can accidentally change commands.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner would ask, “Which model is Wispr using?” A senior engineer asks, “Where are the milliseconds going?” Freeflow's value is not just model selection. It is the whole pipeline: realtime audio, context-aware processing, tight timeouts, paste orchestration, and run logs.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+Latency is a product feature, not only an engineering metric. If the assistant is going to feel like an extension of your intent, every stage must be designed to start early, stream incrementally, and avoid waiting for perfection when good-enough is enough to act.
+
+## 2026-06-29 — Chat-style Lexi conversation history
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We started by finding where Lexi actually renders answers. The important file was `RawCapturePanelController.swift`, because that one class owns the floating panel, its expanded state, the answer display, and the follow-up composer. The existing app already had the concept of a lookup stack: every answer can have a child follow-up or nested lookup. So the right move was not to invent a second chat system. We turned the existing stack into a visible conversation timeline.
+
+The reason this matters is that chat UI is mostly about continuity. Before this change, Lexi behaved like a microscope: you looked at the current answer only. After the change, it behaves more like a conversation: your prompt appears, Lexi's answer appears, then follow-ups append underneath in order. You can scroll back up instead of losing the previous turn.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+One possible path was to build a brand-new chat model separate from `LookupNavigationStack`. That would have made the UI look fresh, but it would duplicate state and create bugs where the UI conversation and the actual request lineage disagree. We rejected that because Lexi already uses the stack to know what answer a follow-up belongs to.
+
+Another path was to only rename the button and leave the answer panel as a single large card. That would be quick, but it would not solve the real product problem: when you ask follow-ups, you need memory on screen. A single-card answer is fine for one-off explanations; it is weak for an actual assistant.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+Think of the conversation like a string of beads. Each `LookupNode` is one bead: it has the thing you asked about and the answer Lexi generated. `LookupNavigationStack.activePath` is the current string of beads from the original question to the latest follow-up. The UI now loops over that path and renders each node as two bubbles: your prompt on the left, Lexi's answer on the right.
+
+The follow-up composer stays pinned below the scrollable history. That order matters. If the composer were inside the long scroll area, it could drift out of reach after a long answer. By keeping the history scrollable and the input below it, Lexi feels closer to ChatGPT or Perplexity: read above, type below.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+We used SwiftUI's `ScrollView`, `ScrollViewReader`, and `LazyVStack` because the job is dynamic vertical layout. `ScrollView` gives the history area. `LazyVStack` is efficient for a growing list of turns. `ScrollViewReader` lets the panel jump to the latest message while streaming tokens arrive.
+
+We also kept the existing AppKit panel architecture. The window behavior, Escape dismissal, hover expansion, and floating-panel behavior were already working. This was a content/layout change, not a reason to rebuild the shell.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized preserving Lexi's existing follow-up mechanics. That means the history shown is the active branch of the conversation, not every sibling branch you might have explored earlier. For normal follow-up conversations, that is exactly what you expect. For complex tree-style research, a future version might need a sidebar or branch switcher.
+
+We also prioritized a clean single scroll area over the older selectable answer view. The previous answer card used a custom AppKit text view for selection. The new bubbles use selectable SwiftUI text, and the panel now asks the live selection when triggering a nested lookup. That keeps the keyboard workflow intact while making the UI much closer to a modern chat surface.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main subtle issue was selection. It would have been easy to replace the old answer view with plain text and accidentally break the “highlight inside an answer, then press right arrow” workflow. The fix was to route nested lookup requests through the panel's live selected text, not only through the view model's cached selection.
+
+The other practical mess was auto-scrolling. Streaming answers update many times as tokens arrive. If the UI does not scroll to the bottom on each answer-length change, the latest output can grow below the fold and feel broken. The scroll ID now includes answer lengths so streaming updates keep the newest content visible.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The biggest future pitfall is branch history. The underlying structure is a tree, but chat UI is linear. Right now we show the active path through that tree. If you start jumping between old nodes and asking alternate follow-ups, the UI will feel like a branch path rather than a complete transcript. That is acceptable for now, but it is the next thing to revisit if Lexi becomes a research companion.
+
+Also watch the left/right convention. You specifically asked for user questions on the left and AI answers on the right, so that is how this works. Many chat products put the user on the right and the assistant on the left. If the UI ever feels visually reversed, this is the reason.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might treat this as “add bubbles.” A senior person sees that the real work is state alignment: the visual transcript must match the request lineage the model is using. If those drift apart, the app becomes confusing fast. You might see one conversation on screen while the backend answers using a different parent answer.
+
+The non-obvious part is that UI polish often means respecting existing invisible workflows. The nested lookup shortcut, live text selection, Escape dismissal, and hover expansion all still matter. A prettier UI that breaks those flows would be a regression.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When improving a product interface, first find the existing source of truth. Do not create a new surface that merely looks right. Attach the new interface to the same state the product already trusts.
+
+This applies outside software too. If you redesign a CRM dashboard, use the pipeline data sales already operates from. If you redesign a hiring tracker, use the candidate state recruiters actually update. Beautiful UI wrapped around duplicate state is just a prettier way to get confused.
+
+The single most important takeaway: a great chat interface is not just bubbles and scrolling — it is a faithful visual history of the same context the assistant is actually using.
+
+## 2026-06-29 — Command mode composition tuning
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We treated command mode as two systems that have to cooperate: the Mac app decides whether you are trying to write into an active field, and the proxy decides what text should be generated. The original behavior was weak because those two systems were not specific enough. Lexi could hear “make this paragraph more concise,” but the intent detector was too narrow, the writable-field detection was too conservative in some places and too vague in others, and the compose prompt did not strongly tell the model to replace selected text instead of talking about it.
+
+So we tightened both halves. In Swift, we improved command detection and active text-field recognition. In the proxy, we made the compose prompt understand rewrite mode versus new-draft mode. That is the difference between “write a Slack reply” and “make this selected paragraph more concise.” One creates new text at the cursor; the other should replace the selected text.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+One tempting route was to call this a model problem and jump straight to “fine-tuning.” That would be premature. The failure was mostly instruction design and routing, not lack of model capability. A fine-tuned model would still behave badly if Lexi sent ambiguous context or failed to mark selected text as replacement material.
+
+Another option was to make every spoken command inside any app write into the app no matter what. That is dangerous. Lexi should work across active text fields, but it should not paste into random non-editable surfaces or secure fields. So we broadened recognition of real text targets while keeping password/secure-field rejection.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+Command mode now has a clearer pipeline. First, `CompositionIntentDetector` asks, “Does this sound like a writing/editing command?” It now recognizes more real phrases: shorten, tighten, polish, improve, proofread, fix grammar, make more concise, and similar commands.
+
+Then `ActiveTextContextCapture` asks, “Is the current focused thing plausibly writable?” It checks direct Accessibility attributes, parent elements, child elements, roles, subroles, titles, descriptions, and common field labels like message, reply, comment, compose, input, editor, and textarea. If it is not writable, Lexi now shows “Click into a text field first” instead of accidentally explaining the selected text.
+
+Finally, the proxy receives the composition request. The prompt now includes a `COMPOSITION MODE` line. For selected-text transformations, it says to replace the selected text only. For empty-cursor writing, it says to insert new text at the cursor and use context only for tone and format.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+We used Swift's Accessibility APIs because Lexi is a native macOS layer. That is how it can work in TextEdit, Notes, browsers, Slack, Obsidian, Notion, and other editors instead of being tied to one website.
+
+We used the Railway production proxy because your installed app is configured to call `https://lexi-production-9152.up.railway.app`. Local prompt changes would not have mattered until the proxy was deployed. The verification therefore had to test both local builds and live production `/compose` responses.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized command accuracy over maximum creativity. Compose temperature was lowered so “make this paragraph more concise” is less likely to become a chatty critique. The tradeoff is that creative writing may be slightly less varied, but for command mode, obedience matters more than surprise.
+
+We also added a direct Accessibility insertion path before paste fallback. Native fields can be edited more reliably this way. Web editors still need paste fallback because they often do not expose clean settable text values.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The useful mess was testing. A temporary local probe could confirm that TextEdit was considered writable, but it could not fully simulate installed Lexi's permissions for event posting. That exposed an important reality of macOS development: the executable identity matters. A random temp binary is not the same as `/Applications/Lexi.app` in the eyes of Accessibility and input monitoring.
+
+The first production `/compose` test also showed the prompt was still too loose. The model produced a concise sentence, but it was too meta — it described the paragraph instead of simply rewriting it. That was valuable because it caught the exact failure mode you complained about. We tightened the prompt again, redeployed, and then production returned the kind of concise rewrite we actually wanted.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The next tricky area is app-specific editor behavior. TextEdit, Slack, Notion, Google Docs, Chrome textareas, and Obsidian may all accept insertion differently. Direct Accessibility insertion works best for native controls. Paste fallback works best for complex web editors. Some apps may still require special adapters later.
+
+Also, “all active text fields” should never mean “all apps everywhere.” Password fields and secure inputs must stay off-limits. The safe version is: all normal writable fields that macOS exposes or that known editor hosts can accept paste into.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might only tweak the prompt. A senior person checks the whole loop: intent detection, focused-field capture, selected-text semantics, insertion method, backend prompt, deployment target, and live verification. If any one of those is wrong, the feature feels broken even if the model is smart.
+
+The non-obvious product detail is replacement semantics. “Make this concise” is not the same operation as “write a concise paragraph.” One should overwrite selected text; the other should insert new text. Great command tools understand that difference.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When a tool follows commands poorly, do not immediately blame the intelligence layer. First check whether the system framed the task correctly. Did it know the user's intent? Did it know the object being edited? Did it know whether to replace or append? Did the deployed service actually receive the new instructions?
+
+This applies to any workflow: sales automation, CRM cleanup, AI assistants, hiring ops. The output quality depends on routing and context as much as raw intelligence.
+
+The single most important takeaway: command mode gets good when the system knows the difference between drafting new text and transforming the thing you selected.
+
+## 2026-06-29 — Command mode edge-case hardening
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We treated your feedback as a routing and semantics problem, not just a “make the model better” problem. The two failures were concrete: delete commands did not actually delete, and Lexi could confuse answer questions with write commands when a text field was active.
+
+So we separated command mode into clearer lanes: whole-selection deletion, selected-text transformation, new-text writing, and current-screen answering. Each lane now has a different behavior instead of everything getting pushed through the same compose endpoint.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not try to make the model output an empty string for deletion. That sounds simple but fails in streaming systems because no tokens means no insertion event. Delete needed to be an app-side action, not a model answer.
+
+We also did not let every spoken sentence in a text field become a write command. If you ask, “What should I do next based on this email?” Lexi should answer using screen context, not paste text into the email draft.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The flow now works like a traffic controller. `CompositionIntentDetector` decides whether the instruction is a write/edit command, a whole-delete command, or an answer question. `AppDelegate` routes accordingly. `StreamingTextInserter` now has a direct `replaceSelection` path, so deletion can happen without waiting for the model.
+
+For context awareness, answer questions with no selected text now use current-screen capture/OCR through the Buddy explain route. Compose requests also include visible-screen OCR in session context when available, so writing can reflect what is on screen, not only what is inside the focused editor.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+We reused Lexi's existing ScreenCaptureKit plus Vision OCR path because it already powers Buddy Capture. That gave current-screen context without inventing a new subsystem.
+
+For testing, we used three layers: Swift routing tests for command classification, proxy prompt tests for compose-mode instructions, and live Railway `/compose` and `/explain` tests for real model behavior.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized correctness and safety over broad magic. “Delete this” now requires selected text; if there is no selected text, Lexi asks you to select text instead of guessing what to delete.
+
+Screen OCR adds useful context but can add latency and depends on Screen Recording permission. That is the cost of making the agent see the current screen.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The routing tests caught a real bug: “what should I do next based on this customer email” was classified as compose because the detector saw the word “email.” That is exactly why edge-case tests matter. We added an answer-question guard so question-shaped prompts route to answering unless they explicitly begin as write/edit commands.
+
+The delete classifier also needed nuance. “Delete this sentence” should delete. “Remove the em dashes” should not delete the whole selection; it should transform punctuation. We split those apart.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+The hardest future bugs will be ambiguous commands. “Remove this paragraph” means delete. “Remove the em dashes from this paragraph” means transform. Humans infer that instantly; software needs explicit rules.
+
+Also, current-screen context depends on permissions and app behavior. If Screen Recording or Accessibility is missing, the agent will have less context.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might only test happy-path prompts like “write a reply.” A senior tests adversarially: answer questions containing writing-related nouns, delete commands with selected text, punctuation transforms, and context-dependent prompts where the answer must mention visible screen content.
+
+The expert-level detail is that “delete” is not generation. It is an editor operation. Treating it like generation is why it failed.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When an AI feature behaves badly, split intent from execution. First decide what operation the user wants. Then decide which tool should execute it. Do not use the model as a hammer for every nail.
+
+The single most important takeaway: robust command mode is a router plus tools, not just a smarter prompt.
+
+## 2026-06-30 — Safely finding and pushing the real running Lexi code
+
+### Step 1 — The Approach: What Did We Do and Why?
+
+We treated this like matching a physical object to its blueprint. The running object was `/Applications/Lexi.app`, but that app bundle is only the built artifact, not the source code. So we first identified the running process, read its bundle metadata, and then traced backward through Xcode's DerivedData and Jeremy's own Lexi handoff notes until the real source repo surfaced at `/Volumes/T7/Projects/Jeremy/Lexi`.
+
+The key reason for this order was safety. Pushing the wrong repo is like mailing the wrong house keys to someone: Git will happily do it, but the result is confusion later.
+
+### Step 2 — The Roads Not Taken: What Was Considered and Rejected?
+
+We did not assume the first `Lexi` thing we found was source. Some matches were app caches, Chrome IndexedDB files, old app backups, or documentation. We also did not trust the stale Xcode blueprint alone, because it pointed to an older `openclicky` path that no longer existed locally.
+
+The better path was triangulation: running process, bundle ID, executable hash, handoff documentation, local repo status, and GitHub repo metadata all had to agree.
+
+### Step 3 — How the Parts Connect: The Architecture of the Work
+
+The chain was: running app process → `/Applications/Lexi.app` → bundle ID `com.jeremyro.lexi` → matching packaged app in `/Volumes/T7/Projects/Jeremy/Lexi/dist/Lexi.app` → source repo at `/Volumes/T7/Projects/Jeremy/Lexi` → GitHub repo `jeremyjro/lexi`.
+
+That chain matters because the app you use daily is the compiled result of the source. The source is what GitHub should receive. The hash match between the running executable and the packaged executable confirmed we were not pushing some unrelated Lexi experiment.
+
+### Step 4 — Tools, Methods, Frameworks: Why These Specifically?
+
+We used macOS process inspection to identify what was actually running, `plutil` and `codesign` to inspect app identity, Git commands to inspect repo state, and Swift/TypeScript builds to verify the code still compiled. This is a practical release checklist: identify, compare, verify, then commit.
+
+### Step 5 — The Tradeoffs: What Was Prioritized, What Was Sacrificed?
+
+We prioritized correctness over speed. It took longer than blindly running `git push`, but it avoided pushing the wrong folder. We also excluded the stray `._LEXI_PRODUCT_SPEC.md` AppleDouble file because that is external-drive metadata, not product source.
+
+### Step 6 — The Mess: Mistakes, Dead Ends, Wrong Turns
+
+The main wrong turn was the stale Xcode blueprint. It mentioned `openclicky` and an older `Percy` remote, which looked plausible but did not match the actual source checkout. The recovery move was to keep looking until the T7 path appeared in the handoff notes and Spotlight results.
+
+### Step 7 — Watch Out: Future Pitfalls
+
+External drives and renamed projects create archaeological layers. A Mac app can be in `/Applications`, the package can be in `dist/`, and the real repo can be somewhere else entirely. Before pushing, always prove the repo matches the artifact you care about.
+
+Also watch for secrets in Git remotes and env files. The code content had only placeholders, but remote URLs and local config can contain credentials and should not be repeated in public notes.
+
+### Step 8 — The Expert Eye: What a Beginner Would Miss
+
+A beginner might search for “Lexi” and push the first repo. The senior move is checking identity from multiple angles: bundle identifier, build version, executable hash, remote repo, branch, and diff contents. One signal can lie; five matching signals are evidence.
+
+### Step 9 — The Transfer: Lessons That Apply Everywhere
+
+When you inherit or revisit a project, do not start by acting. Start by establishing identity. In code, as in operations, the first question is not “what command do I run?” It is “am I standing in the right place?”
+
+The single most important takeaway: before pushing code, prove that the source repo, built artifact, and GitHub destination all point to the same product.

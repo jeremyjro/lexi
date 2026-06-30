@@ -134,6 +134,9 @@ private struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                settingsRow("Voice buffer", "\(AppConfiguration.voiceAudioBufferSizeFrames) frames")
+                settingsRow("AssemblyAI final fallback", "\(String(format: "%.1f", AppConfiguration.assemblyAIFinalTranscriptFallbackDelaySeconds))s")
+
                 HStack {
                     Spacer()
                     Button("Save Voice Settings") {
@@ -310,6 +313,7 @@ private struct SettingsView: View {
 
         UserDefaults.standard.set(selectedVoiceProviderRawValue, forKey: "LexiVoiceProvider")
         UserDefaults.standard.set(isReadAloudEnabled, forKey: "LexiTTSReadAloudEnabled")
+        BuddyTranscriptionProviderFactory.prewarmIfNeeded()
 
         statusText = "Settings saved. Check status to verify the active connection."
     }
@@ -327,6 +331,7 @@ private struct SettingsView: View {
                 let backendKeyStatus = health.anthropicApiKeyConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                 let backendTokenStatus = health.proxyTokenConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                 let assemblyStatus = health.assemblyAIConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
+                let assemblyTimeout = health.assemblyAITokenTimeoutMs.map { "\($0)ms" } ?? "Unknown"
                 let elevenLabsStatus = health.elevenLabsConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                 let diagnostics = LexiDiagnostics.snapshot.summary
                 await MainActor.run {
@@ -340,6 +345,9 @@ private struct SettingsView: View {
                     Backend API key: \(backendKeyStatus)
                     Backend proxy token: \(backendTokenStatus)
                     AssemblyAI: \(assemblyStatus)
+                    AssemblyAI token timeout: \(assemblyTimeout)
+                    Voice buffer: \(AppConfiguration.voiceAudioBufferSizeFrames) frames
+                    AssemblyAI final fallback: \(String(format: "%.1f", AppConfiguration.assemblyAIFinalTranscriptFallbackDelaySeconds))s
                     ElevenLabs: \(elevenLabsStatus)
 
                     Diagnostics:

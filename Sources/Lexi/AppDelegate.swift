@@ -5,11 +5,12 @@ import Foundation
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
-    private var permissionOnboarding: PermissionOnboardingWindowController?
     private let hotkeyManager = HotkeyManager()
     private let selectionCapture = SelectionCapture()
     private let rawCapturePanel = RawCapturePanelController()
     private let sessionMemory = ResearchSessionMemory()
+    private let contextSampler = LexiContextSampler()
+    private let activeTextContextCapture = ActiveTextContextCapture()
     private let ttsClient = ElevenLabsTTSClient()
     private let highlightVoiceCapture = BuddyVoiceCapture()
     private let calloutOverlay = BuddyCalloutOverlayController()
@@ -19,6 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var explainTask: Task<Void, Never>?
     private var lastAnswer: String?
     private var isLookupHotkeyHeld = false
+    private var lookupHotkeyStartedAt: Double = 0
     private var isHighlightVoiceCaptureArmed = false
     private var isEnabled = true
 
@@ -36,6 +38,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.requestFollowUp(question: question, stack: stack)
         }
         setupBuddyCapture()
+        contextSampler.start()
+        BuddyTranscriptionProviderFactory.prewarmIfNeeded()
 
         requestAccessibilityPermission()
         let isTrusted = AXIsProcessTrusted()
@@ -43,7 +47,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !isTrusted {
             print("Accessibility permission is not enabled")
-            showPermissionOnboarding()
         }
 
         setupGlobalHotkey()
@@ -105,14 +108,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem?.menu = menu
-    }
-
-    private func showPermissionOnboarding() {
-        if permissionOnboarding == nil {
-            permissionOnboarding = PermissionOnboardingWindowController()
-        }
-        permissionOnboarding?.showWindow(nil)
-        permissionOnboarding?.window?.orderFrontRegardless()
     }
 
     private func requestAccessibilityPermission() {
@@ -177,7 +172,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             showAlert(title: "Lexi permissions are enabled")
         } else {
             requestAccessibilityPermission()
-            showPermissionOnboarding()
+            showSettings()
         }
     }
 
@@ -191,11 +186,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     let backendKeyStatus = health.anthropicApiKeyConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                     let backendTokenStatus = health.proxyTokenConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                     let assemblyStatus = health.assemblyAIConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
+                    let assemblyTimeout = health.assemblyAITokenTimeoutMs.map { "\($0)ms" } ?? "Unknown"
                     let elevenLabsStatus = health.elevenLabsConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                     let perplexityStatus = health.perplexityConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                     self.showAlert(
                         title: health.ok ? "Lexi proxy is online" : "Lexi proxy responded unexpectedly",
-                        message: "URL: \(client.baseURLDescription)\nModel: \(health.model)\nVision model: \(health.visionModel ?? health.model)\nLocal token configured: \(client.hasProxyToken ? "Yes" : "No")\nBackend key configured: \(backendKeyStatus)\nBackend token configured: \(backendTokenStatus)\nAssemblyAI configured: \(assemblyStatus)\nElevenLabs configured: \(elevenLabsStatus)\nPerplexity configured: \(perplexityStatus)\nResearch provider: \(health.researchProvider ?? "none")\nResearch mode: \(health.researchMode ?? "unknown")\nResearch model: \(health.perplexityModel ?? "unknown")"
+                        message: "URL: \(client.baseURLDescription)\nModel: \(health.model)\nVision model: \(health.visionModel ?? health.model)\nLocal token configured: \(client.hasProxyToken ? "Yes" : "No")\nBackend key configured: \(backendKeyStatus)\nBackend token configured: \(backendTokenStatus)\nAssemblyAI configured: \(assemblyStatus)\nAssemblyAI token timeout: \(assemblyTimeout)\nVoice buffer: \(AppConfiguration.voiceAudioBufferSizeFrames) frames\nAssemblyAI final fallback: \(String(format: "%.1f", AppConfiguration.assemblyAIFinalTranscriptFallbackDelaySeconds))s\nElevenLabs configured: \(elevenLabsStatus)\nPerplexity configured: \(perplexityStatus)\nResearch provider: \(health.researchProvider ?? "none")\nResearch mode: \(health.researchMode ?? "unknown")\nResearch model: \(health.perplexityModel ?? "unknown")"
                     )
                 }
             } catch {
@@ -247,7 +243,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.onPermissionsMissing = { [weak self] permissions in
             guard let self else { return }
             self.cursorBuddy.pulse(.error)
-            self.showPermissionOnboarding()
+            self.showSettings()
             self.rawCapturePanel.show(status: .buddyPermissionMissing(permissions), anchorRect: nil)
         }
         coordinator.onMessage = { [weak self] title, message in
@@ -270,7 +266,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.onInstallFailed = { [weak self] in
             guard let self else { return }
             self.cursorBuddy.pulse(.error)
-            self.showPermissionOnboarding()
+            self.showSettings()
             self.rawCapturePanel.show(status: .buddyPermissionMissing([.accessibility]), anchorRect: nil)
         }
         coordinator.start()
@@ -281,6 +277,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func beginLookupHotkeyHold() {
         guard isEnabled, !isLookupHotkeyHeld else { return }
         isLookupHotkeyHeld = true
+        lookupHotkeyStartedAt = currentMilliseconds()
         cursorBuddy.setActivity(.listening)
         startHighlightVoiceCaptureIfAvailable()
     }
@@ -288,7 +285,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func finishLookupHotkeyHold() {
         guard isLookupHotkeyHeld else { return }
         isLookupHotkeyHeld = false
-        let hotkeyStartedAt = currentMilliseconds()
+        let hotkeyStartedAt = lookupHotkeyStartedAt > 0 ? lookupHotkeyStartedAt : currentMilliseconds()
+        lookupHotkeyStartedAt = 0
         guard isHighlightVoiceCaptureArmed else {
             finishLookupHotkeyHold(spokenQuestion: "", hotkeyStartedAt: hotkeyStartedAt)
             return
@@ -325,20 +323,64 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch selectionCapture.capture() {
         case .success(let capture):
             let captureWithQuestion = capture.withQuestion(spokenQuestion)
-            cursorBuddy.setActivity(.working)
             let captureMs = Int(currentMilliseconds() - captureStartedAt)
             print("Capture success: term='\(captureWithQuestion.term)', passageLength=\(captureWithQuestion.passage.count), app='\(captureWithQuestion.appName)', source=\(captureWithQuestion.source), capture=\(captureMs)ms")
+            if CompositionIntentDetector.isWholeDeletionInstruction(spokenQuestion) {
+                if let compositionContext = activeTextContextCapture.capture(selectedText: captureWithQuestion.term, surroundingText: captureWithQuestion.passage),
+                   compositionContext.isWritable {
+                    requestDeletion(instruction: spokenQuestion, context: compositionContext)
+                } else {
+                    cursorBuddy.setActivity(.idle)
+                    cursorBuddy.showHint("Click into a text field first", duration: 2.0)
+                }
+                return
+            }
+            if CompositionIntentDetector.isCompositionInstruction(spokenQuestion) {
+                if let compositionContext = activeTextContextCapture.capture(selectedText: captureWithQuestion.term, surroundingText: captureWithQuestion.passage),
+                   compositionContext.isWritable {
+                    requestComposition(instruction: spokenQuestion, context: compositionContext)
+                } else {
+                    cursorBuddy.setActivity(.idle)
+                    cursorBuddy.showHint("Click into a text field first", duration: 2.0)
+                }
+                return
+            }
+            cursorBuddy.setActivity(.working)
             rawCapturePanel.show(status: .loading(captureWithQuestion), anchorRect: captureWithQuestion.anchorRect)
             let panelShownMs = Int(currentMilliseconds() - hotkeyStartedAt)
             print("Lexi latency: panelShown=\(panelShownMs)ms")
             requestExplanation(for: captureWithQuestion, hotkeyStartedAt: hotkeyStartedAt)
         case .noSelection(let appName, let windowTitle):
+            let trimmedQuestion = spokenQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
             print("Option+Space released without selected text: app='\(appName)', window='\(windowTitle)'")
-            cursorBuddy.setActivity(.idle)
+            guard !trimmedQuestion.isEmpty else {
+                cursorBuddy.setActivity(.idle)
+                return
+            }
+            if CompositionIntentDetector.isWholeDeletionInstruction(trimmedQuestion) {
+                if let compositionContext = activeTextContextCapture.capture(),
+                   compositionContext.isWritable,
+                   !compositionContext.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    requestDeletion(instruction: trimmedQuestion, context: compositionContext)
+                } else {
+                    cursorBuddy.setActivity(.idle)
+                    cursorBuddy.showHint("Select text to delete", duration: 2.0)
+                }
+            } else if CompositionIntentDetector.isCompositionInstruction(trimmedQuestion) {
+                if let compositionContext = activeTextContextCapture.capture(),
+                   compositionContext.isWritable {
+                    requestComposition(instruction: trimmedQuestion, context: compositionContext)
+                } else {
+                    cursorBuddy.setActivity(.idle)
+                    cursorBuddy.showHint("Click into a text field first", duration: 2.0)
+                }
+            } else {
+                requestFocusedScreenAnswer(question: trimmedQuestion, fallbackAppName: appName, fallbackWindowTitle: windowTitle)
+            }
         case .accessibilityPermissionMissing:
             print("Capture failed: Accessibility permission missing")
             cursorBuddy.pulse(.error)
-            showPermissionOnboarding()
+            showSettings()
             rawCapturePanel.show(status: .noPermission, anchorRect: nil)
         }
     }
@@ -358,6 +400,149 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func requestDeletion(instruction: String, context: ActiveTextCompositionContext) {
+        explainTask?.cancel()
+        cursorBuddy.setActivity(.working)
+        cursorBuddy.showHint("Deleting selection…", duration: 1.2)
+        let selectedText = context.selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selectedText.isEmpty else {
+            cursorBuddy.setActivity(.idle)
+            cursorBuddy.showHint("Select text to delete", duration: 2.0)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let didDelete = await StreamingTextInserter().replaceSelection(with: "", allowKeyboardFallback: true)
+            await MainActor.run {
+                if didDelete {
+                    self.sessionMemory.record(prompt: instruction, answer: "Deleted selected text", source: "Active deletion")
+                    self.cursorBuddy.setActivity(.idle)
+                    self.cursorBuddy.showHint("Deleted selection", duration: 1.5)
+                } else {
+                    self.cursorBuddy.pulse(.error)
+                    self.cursorBuddy.showHint("Couldn’t delete there", duration: 2.0)
+                }
+            }
+        }
+    }
+
+    private func requestFocusedScreenAnswer(question: String, fallbackAppName: String, fallbackWindowTitle: String) {
+        explainTask?.cancel()
+        cursorBuddy.setActivity(.working)
+        cursorBuddy.showHint("Reading current screen…", duration: 1.5)
+        Task { [weak self] in
+            guard let self else { return }
+            let activeContext = self.activeTextContextCapture.capture()
+            let appName = activeContext?.appName.isEmpty == false ? activeContext?.appName ?? fallbackAppName : fallbackAppName
+            let windowTitle = activeContext?.windowTitle.isEmpty == false ? activeContext?.windowTitle ?? fallbackWindowTitle : fallbackWindowTitle
+            var screenshot: RegionScreenshot?
+            do {
+                if let focusedWindow = try await RegionScreenshotCapture.captureFocusedWindow() {
+                    screenshot = focusedWindow
+                } else {
+                    screenshot = try await RegionScreenshotCapture.captureCursorScreen()
+                }
+            } catch {
+                print("Lexi current-screen answer capture failed: \(error.localizedDescription)")
+            }
+            let textContext = [activeContext?.selectedText, activeContext?.surroundingText, activeContext?.currentText]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            await MainActor.run {
+                guard screenshot != nil || !textContext.isEmpty else {
+                    self.cursorBuddy.pulse(.error)
+                    self.cursorBuddy.showHint("Couldn’t read current screen", duration: 2.0)
+                    return
+                }
+                self.requestBuddyExplanation(for: BuddyCaptureContext(
+                    question: question,
+                    screenshot: screenshot,
+                    appName: appName.isEmpty ? "Unknown" : appName,
+                    windowTitle: windowTitle,
+                    anchorRect: screenshot?.sourceRect,
+                    modeLabel: "Current screen",
+                    textContext: textContext
+                ))
+            }
+        }
+    }
+
+    private func visibleScreenTextContext() async -> String {
+        do {
+            var screenshot = try await RegionScreenshotCapture.captureFocusedWindow()
+            if screenshot == nil {
+                screenshot = try await RegionScreenshotCapture.captureCursorScreen()
+            }
+            let text = screenshot?.recognizedText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return text.isEmpty ? "" : "VISIBLE SCREEN OCR:\n\(text)"
+        } catch {
+            return ""
+        }
+    }
+
+    private func requestComposition(instruction: String, context: ActiveTextCompositionContext) {
+        explainTask?.cancel()
+        cursorBuddy.setActivity(.working)
+        cursorBuddy.showHint("Composing into \(context.appName)…", duration: 2.0)
+        let inserter = StreamingTextInserter()
+        inserter.begin()
+
+        explainTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let requestStartedAt = currentMilliseconds()
+                let client = ExplainClient()
+                let visibleScreenText = await self.visibleScreenTextContext()
+                let answer = try await client.compose(
+                    instruction: instruction,
+                    context: context,
+                    sessionContext: self.inferenceContext(for: [instruction, context.selectedText, context.surroundingText, context.currentText, visibleScreenText]),
+                    onDelta: { [weak self] delta, _ in
+                        guard let self else { return }
+                        self.cursorBuddy.setActivity(.streaming)
+                        inserter.insert(delta)
+                    },
+                    onTiming: { timing in
+                        if let proxyTtftMs = timing.proxyTtftMs, let anthropicTtftMs = timing.anthropicTtftMs {
+                            print("Lexi compose timing: proxyTtft=\(proxyTtftMs)ms anthropicTtft=\(anthropicTtftMs)ms totalStarted=\(Int(self.currentMilliseconds() - requestStartedAt))ms")
+                        }
+                    }
+                )
+                if Task.isCancelled {
+                    await MainActor.run {
+                        inserter.cancel()
+                        self.cursorBuddy.setActivity(.idle)
+                    }
+                    return
+                }
+                await MainActor.run {
+                    inserter.finish()
+                    self.lastAnswer = answer
+                    self.sessionMemory.record(prompt: instruction, answer: answer, source: "Active composition")
+                    LexiInteractionEventStore.shared.record(
+                        prompt: instruction,
+                        answer: answer,
+                        source: "Active composition",
+                        appName: context.appName,
+                        windowTitle: context.windowTitle
+                    )
+                    self.cursorBuddy.setActivity(.idle)
+                    self.cursorBuddy.showHint("Inserted draft", duration: 1.5)
+                    self.rebuildMenu()
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    inserter.cancel()
+                    self.cursorBuddy.pulse(.error)
+                    self.cursorBuddy.showHint("Couldn’t compose there", duration: 2.0)
+                    print("Lexi composition failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     private func requestBuddyExplanation(for capture: BuddyCaptureContext) {
         explainTask?.cancel()
         cursorBuddy.setActivity(.working)
@@ -370,14 +555,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let requestStartedAt = currentMilliseconds()
                 let client = ExplainClient()
+                let visibleText = [capture.screenshot?.recognizedText, capture.textContext]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
                 let answer = try await client.explainBuddy(
                     imageBase64: capture.screenshot?.base64Data,
                     imageMediaType: capture.screenshot?.mediaType ?? RegionScreenshotCapture.mediaType,
                     question: capture.question,
                     appName: capture.appName,
                     windowTitle: capture.windowTitle,
-                    ocrText: capture.screenshot?.recognizedText ?? "",
-                    sessionContext: self.sessionMemory.contextSummary,
+                    ocrText: visibleText,
+                    sessionContext: self.inferenceContext(for: [capture.displayTitle, capture.question, capture.sourceText, visibleText]),
                     onDelta: { [weak self] _, accumulated in
                         guard let self else { return }
                         if !didLogFirstToken {
@@ -408,6 +597,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     self.lastAnswer = finalAnswer
                     self.sessionMemory.record(prompt: capture.displayTitle, answer: finalAnswer, source: capture.modeLabel)
+                    LexiInteractionEventStore.shared.record(
+                        prompt: capture.displayTitle,
+                        answer: finalAnswer,
+                        source: capture.modeLabel,
+                        appName: capture.appName,
+                        windowTitle: capture.windowTitle
+                    )
                     self.rawCapturePanel.update(status: .lookup(stack))
                     self.showBuddyCalloutIfAvailable(callout, capture: capture)
                     self.speakIfEnabled(finalAnswer)
@@ -440,7 +636,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let requestStartedAt = currentMilliseconds()
                 let client = ExplainClient()
-                let answer = try await client.explainNested(term: term, in: parentStack, sessionContext: self.sessionMemory.contextSummary) { [weak self] _, accumulated in
+                let answer = try await client.explainNested(term: term, in: parentStack, sessionContext: self.inferenceContext(for: [term, parentStack.currentNode?.answer ?? "", parentStack.rootNode?.sourceText ?? ""])) { [weak self] _, accumulated in
                     guard let self else { return }
                     self.cursorBuddy.setActivity(.streaming)
                     self.rawCapturePanel.updateLookupAnswer(nodeId: childId, answer: accumulated)
@@ -454,6 +650,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.rawCapturePanel.updateLookupAnswer(nodeId: childId, answer: answer)
                     self.lastAnswer = answer
                     self.sessionMemory.record(prompt: term, answer: answer, source: "Nested lookup")
+                    LexiInteractionEventStore.shared.record(
+                        prompt: term,
+                        answer: answer,
+                        source: "Nested lookup",
+                        appName: "Lexi",
+                        windowTitle: parentStack.currentNode?.term ?? parentStack.rootNode?.term ?? ""
+                    )
                     self.speakIfEnabled(answer)
                     self.cursorBuddy.setActivity(.idle)
                     self.rebuildMenu()
@@ -486,7 +689,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let requestStartedAt = currentMilliseconds()
                 let client = ExplainClient()
-                let answer = try await client.explainFollowUp(question: question, in: parentStack, sessionContext: self.sessionMemory.contextSummary) { [weak self] _, accumulated in
+                let answer = try await client.explainFollowUp(question: question, in: parentStack, sessionContext: self.inferenceContext(for: [question, parentStack.currentNode?.answer ?? "", parentStack.rootNode?.sourceText ?? ""])) { [weak self] _, accumulated in
                     guard let self else { return }
                     self.cursorBuddy.setActivity(.streaming)
                     self.rawCapturePanel.updateLookupAnswer(nodeId: childId, answer: accumulated)
@@ -500,6 +703,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.rawCapturePanel.updateLookupAnswer(nodeId: childId, answer: answer)
                     self.lastAnswer = answer
                     self.sessionMemory.record(prompt: question, answer: answer, source: "Follow-up")
+                    LexiInteractionEventStore.shared.record(
+                        prompt: question,
+                        answer: answer,
+                        source: "Follow-up",
+                        appName: parentStack.currentNode?.appName ?? "Lexi",
+                        windowTitle: parentStack.currentNode?.windowTitle ?? parentStack.rootNode?.term ?? ""
+                    )
                     self.speakIfEnabled(answer)
                     self.cursorBuddy.setActivity(.idle)
                     self.rebuildMenu()
@@ -526,7 +736,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let requestStartedAt = currentMilliseconds()
                 let client = ExplainClient()
-                let answer = try await client.explain(capture, sessionContext: self.sessionMemory.contextSummary) { [weak self] _, accumulated in
+                let answer = try await client.explain(capture, sessionContext: self.inferenceContext(for: [capture.term, capture.passage, capture.question ?? ""])) { [weak self] _, accumulated in
                     guard let self else { return }
                     if !didLogFirstToken {
                         didLogFirstToken = true
@@ -553,6 +763,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     self.lastAnswer = answer
                     self.sessionMemory.record(prompt: capture.term, answer: answer, source: "Highlight")
+                    LexiInteractionEventStore.shared.record(
+                        prompt: capture.term,
+                        answer: answer,
+                        source: "Highlight",
+                        appName: capture.appName,
+                        windowTitle: capture.windowTitle
+                    )
                     self.rawCapturePanel.update(status: .lookup(stack))
                     self.speakIfEnabled(answer)
                     self.cursorBuddy.setActivity(.idle)
@@ -567,6 +784,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    private func inferenceContext(for texts: [String]) -> String {
+        let query = texts.joined(separator: "\n")
+        let persistentContext = LexiInteractionEventStore.shared.relevantContextSummary(for: query)
+        return [sessionMemory.contextSummary, persistentContext]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 
     private func speakIfEnabled(_ answer: String) {

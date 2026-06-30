@@ -5,11 +5,14 @@ import express from 'express';
 import { performance } from 'node:perf_hooks';
 import {
   buildBuddyUserMessage,
+  buildComposeUserMessage,
   buildFollowUpUserMessage,
   BuddyExplainRequest,
+  ComposeRequest,
   FollowUpExplainRequest,
   buildUserMessage,
   BUDDY_SYSTEM_PROMPT,
+  COMPOSE_SYSTEM_PROMPT,
   ExplainRequest,
   SYSTEM_PROMPT,
 } from './prompt.js';
@@ -29,6 +32,7 @@ const visionModel = process.env.ANTHROPIC_VISION_MODEL ?? model;
 const proxyToken = process.env.LEXI_PROXY_TOKEN;
 const jsonBodyLimit = process.env.LEXI_JSON_BODY_LIMIT ?? '25mb';
 const assemblyAIApiKey = process.env.ASSEMBLYAI_API_KEY;
+const assemblyAITokenTimeoutMs = Math.max(1000, Math.min(10000, Number(process.env.ASSEMBLYAI_TOKEN_TIMEOUT_MS ?? 4000)));
 const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
 const elevenLabsVoiceId = process.env.ELEVENLABS_VOICE_ID;
 const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
@@ -84,6 +88,7 @@ app.get('/health', (_req, res) => {
     anthropicApiKeyConfigured: Boolean(apiKey),
     proxyTokenConfigured: Boolean(proxyToken),
     assemblyAIConfigured: Boolean(assemblyAIApiKey),
+    assemblyAITokenTimeoutMs,
     elevenLabsConfigured: Boolean(elevenLabsApiKey && elevenLabsVoiceId),
     perplexityConfigured: Boolean(perplexityApiKey),
     researchProvider,
@@ -98,12 +103,20 @@ app.post('/transcribe-token', async (_req, res) => {
     return;
   }
 
-  const response = await fetch('https://streaming.assemblyai.com/v3/token?expires_in_seconds=60&max_session_duration_seconds=600', {
-    method: 'GET',
-    headers: { authorization: assemblyAIApiKey },
-  });
-  const body = await response.text();
-  res.status(response.status).type('application/json').send(body);
+  const startedAt = performance.now();
+  try {
+    const response = await fetch('https://streaming.assemblyai.com/v3/token?expires_in_seconds=60&max_session_duration_seconds=600', {
+      method: 'GET',
+      headers: { authorization: assemblyAIApiKey },
+      signal: AbortSignal.timeout(assemblyAITokenTimeoutMs),
+    });
+    const body = await response.text();
+    console.log(`Lexi transcribe-token status=${response.status} total=${Math.round(performance.now() - startedAt)}ms`);
+    res.status(response.status).type('application/json').send(body);
+  } catch (error) {
+    console.warn(`Lexi transcribe-token failed total=${Math.round(performance.now() - startedAt)}ms`, error);
+    res.status(504).json({ code: 'assemblyai_token_timeout', error: 'AssemblyAI token request timed out.' });
+  }
 });
 
 app.post('/tts', async (req, res) => {
@@ -173,33 +186,47 @@ app.post('/explain', async (req, res) => {
   let firstDeltaAt: number | undefined;
   let outputCharacters = 0;
   const termForLog = requestLabel(request).slice(0, 60);
-  const requestModel = request.kind === 'buddy'
-    ? visionModel
-    : request.kind === 'followup' || (request.kind === 'text' && request.value.lineage)
-      ? nestedModel
-      : model;
-  const maxTokens = request.kind === 'buddy' ? 800 : request.kind === 'followup' ? 600 : request.kind === 'text' && request.value.lineage ? 480 : 700;
+  const plan = buildInferencePlan(request);
   const systemBlocks = request.kind === 'buddy'
     ? [
         { type: 'text' as const, text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } },
         { type: 'text' as const, text: BUDDY_SYSTEM_PROMPT },
       ]
     : [{ type: 'text' as const, text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } }];
-  const research = await maybeResearch(request);
-  const messageContent = buildMessageContent(request, research);
 
   sendEvent(res, 'meta', {
-    model: requestModel,
+    model: plan.model,
+    maxTokens: plan.maxTokens,
+    route: plan.route,
+    latencyTier: plan.latencyTier,
+    researchPolicy: plan.researchPolicy,
+    researchPending: plan.researchPolicy !== 'off',
+    researchUsed: false,
     proxyAcceptedMs: elapsedMs(requestStartedAt),
-    researchProvider: research?.provider,
-    researchUsed: Boolean(research),
   });
+
+  const research = await maybeResearch(request, plan);
+  const messageContent = buildMessageContent(request, research);
+
+  if (research) {
+    sendEvent(res, 'meta', {
+      model: plan.model,
+      maxTokens: plan.maxTokens,
+      route: plan.route,
+      latencyTier: plan.latencyTier,
+      researchPolicy: plan.researchPolicy,
+      researchProvider: research.provider,
+      researchMs: research.elapsedMs,
+      researchUsed: true,
+      proxyAcceptedMs: elapsedMs(requestStartedAt),
+    });
+  }
 
   try {
     const anthropicStartedAt = performance.now();
     const stream = await anthropic.messages.create({
-      model: requestModel,
-      max_tokens: maxTokens,
+      model: plan.model,
+      max_tokens: plan.maxTokens,
       temperature: 0.2,
       system: systemBlocks,
       messages: [
@@ -235,13 +262,106 @@ app.post('/explain', async (req, res) => {
     const doneTiming = {
       totalMs: elapsedMs(requestStartedAt),
       outputCharacters,
+      route: plan.route,
+      latencyTier: plan.latencyTier,
+      researchUsed: Boolean(research),
+      researchProvider: research?.provider,
+      researchMs: research?.elapsedMs,
     };
-    console.log(`Lexi /explain done term="${termForLog}" total=${doneTiming.totalMs}ms chars=${outputCharacters}`);
+    console.log(`Lexi /explain done term="${termForLog}" route=${plan.route} research=${Boolean(research)} total=${doneTiming.totalMs}ms chars=${outputCharacters}`);
     sendEvent(res, 'done', doneTiming);
     res.end();
   } catch (error) {
     const proxyError = classifyAssistantError(error);
     console.error('Anthropic /explain stream failed:', proxyError.code, error);
+    sendEvent(res, 'error', proxyError);
+    res.end();
+  }
+});
+
+app.post('/compose', async (req, res) => {
+  const requestStartedAt = performance.now();
+  const parsed = parseComposeRequest(req.body);
+  if (!parsed.ok) {
+    res.status(400).json({ code: 'invalid_request', error: parsed.error });
+    return;
+  }
+
+  if (!anthropic) {
+    res.status(500).json({ code: 'assistant_misconfigured', error: 'ANTHROPIC_API_KEY is not configured on the proxy.' });
+    return;
+  }
+
+  const request = parsed.value;
+  const requestModel = model;
+  const maxTokens = 1800;
+  const route = 'active_composition';
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+
+  sendEvent(res, 'meta', {
+    model: requestModel,
+    maxTokens,
+    route,
+    latencyTier: 'standard',
+    researchPolicy: 'off',
+    researchUsed: false,
+    proxyAcceptedMs: elapsedMs(requestStartedAt),
+  });
+
+  let firstDeltaAt: number | undefined;
+  let outputCharacters = 0;
+  try {
+    const anthropicStartedAt = performance.now();
+    const stream = await anthropic.messages.create({
+      model: requestModel,
+      max_tokens: maxTokens,
+      temperature: 0.2,
+      system: [{ type: 'text' as const, text: COMPOSE_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } }],
+      messages: [
+        {
+          role: 'user',
+          content: buildComposeUserMessage(request),
+        },
+      ],
+      stream: true,
+    });
+
+    for await (const event of stream) {
+      if (event.type !== 'content_block_delta' || event.delta.type !== 'text_delta') {
+        continue;
+      }
+      if (firstDeltaAt === undefined) {
+        firstDeltaAt = performance.now();
+        const timing = {
+          proxyTtftMs: elapsedMs(requestStartedAt),
+          anthropicTtftMs: elapsedMs(anthropicStartedAt),
+        };
+        console.log(`Lexi /compose first token app="${request.appName}" proxyTtft=${timing.proxyTtftMs}ms anthropicTtft=${timing.anthropicTtftMs}ms`);
+        sendEvent(res, 'timing', timing);
+      }
+      outputCharacters += event.delta.text.length;
+      sendEvent(res, 'delta', { text: event.delta.text });
+    }
+
+    const doneTiming = {
+      totalMs: elapsedMs(requestStartedAt),
+      outputCharacters,
+      route,
+      latencyTier: 'standard',
+      researchUsed: false,
+    };
+    console.log(`Lexi /compose done app="${request.appName}" total=${doneTiming.totalMs}ms chars=${outputCharacters}`);
+    sendEvent(res, 'done', doneTiming);
+    res.end();
+  } catch (error) {
+    const proxyError = classifyAssistantError(error);
+    console.error('Anthropic /compose stream failed:', proxyError.code, error);
     sendEvent(res, 'error', proxyError);
     res.end();
   }
@@ -311,6 +431,10 @@ type ParseResult =
   | { ok: true; value: ExplainRequest }
   | { ok: false; error: string };
 
+type ComposeParseResult =
+  | { ok: true; value: ComposeRequest }
+  | { ok: false; error: string };
+
 type BuddyImage = { mediaType: AllowedImageMediaType; data: string };
 
 type ParsedRequest =
@@ -318,14 +442,59 @@ type ParsedRequest =
   | { kind: 'followup'; value: FollowUpExplainRequest }
   | { kind: 'buddy'; value: BuddyExplainRequest; image?: BuddyImage };
 
+type InferenceRoute = 'fast_text' | 'web_research' | 'personal_memory' | 'nested_lookup' | 'followup' | 'buddy_vision';
+type LatencyTier = 'fast' | 'standard' | 'deep';
+type ResearchPolicy = 'off' | 'auto' | 'required';
+
+type InferencePlan = {
+  route: InferenceRoute;
+  latencyTier: LatencyTier;
+  researchPolicy: ResearchPolicy;
+  model: string;
+  maxTokens: number;
+};
+
 type ResearchResult = {
   provider: 'perplexity';
   context: string;
+  elapsedMs: number;
 };
 
 type RequestParseResult =
   | { ok: true; request: ParsedRequest }
   | { ok: false; error: string };
+
+function parseComposeRequest(body: unknown): ComposeParseResult {
+  if (!body || typeof body !== 'object') {
+    return { ok: false, error: 'Expected JSON object.' };
+  }
+
+  const value = body as Record<string, unknown>;
+  const instruction = stringField(value.instruction).slice(0, 1000);
+  const selectedText = stringField(value.selectedText).slice(0, 1800);
+  const surroundingText = stringField(value.surroundingText).slice(0, 2400);
+  const currentText = stringField(value.currentText).slice(0, 2400);
+  const windowTitle = stringField(value.windowTitle).slice(0, 240);
+  const appName = stringField(value.appName).slice(0, 120);
+  const sessionContext = stringField(value.sessionContext).slice(0, 1800);
+
+  if (!instruction) {
+    return { ok: false, error: 'instruction is required.' };
+  }
+
+  return {
+    ok: true,
+    value: {
+      instruction,
+      selectedText,
+      surroundingText,
+      currentText,
+      windowTitle,
+      appName,
+      ...(sessionContext ? { sessionContext } : {}),
+    },
+  };
+}
 
 function parseRequest(body: unknown): RequestParseResult {
   if (!body || typeof body !== 'object') {
@@ -432,8 +601,55 @@ function parseImage(rawData: unknown, rawMediaType: unknown): BuddyImage | undef
   return { mediaType: resolvedMediaType, data: base64 };
 }
 
-async function maybeResearch(request: ParsedRequest): Promise<ResearchResult | undefined> {
-  if (!shouldUseResearch(request)) {
+function buildInferencePlan(request: ParsedRequest): InferencePlan {
+  switch (request.kind) {
+    case 'buddy':
+      return {
+        route: 'buddy_vision',
+        latencyTier: 'standard',
+        researchPolicy: 'off',
+        model: visionModel,
+        maxTokens: 800,
+      };
+    case 'followup':
+      return {
+        route: 'followup',
+        latencyTier: 'standard',
+        researchPolicy: 'off',
+        model: nestedModel,
+        maxTokens: 600,
+      };
+    case 'text':
+      if (request.value.lineage) {
+        return {
+          route: 'nested_lookup',
+          latencyTier: 'fast',
+          researchPolicy: 'off',
+          model: nestedModel,
+          maxTokens: 480,
+        };
+      }
+      if (shouldUseResearch(request)) {
+        return {
+          route: 'web_research',
+          latencyTier: researchMode === 'always' ? 'deep' : 'standard',
+          researchPolicy: researchMode === 'always' ? 'required' : 'auto',
+          model,
+          maxTokens: 700,
+        };
+      }
+      return {
+        route: request.value.sessionContext ? 'personal_memory' : 'fast_text',
+        latencyTier: 'fast',
+        researchPolicy: 'off',
+        model,
+        maxTokens: request.value.sessionContext ? 700 : 520,
+      };
+  }
+}
+
+async function maybeResearch(request: ParsedRequest, plan: InferencePlan): Promise<ResearchResult | undefined> {
+  if (plan.researchPolicy === 'off' || request.kind !== 'text' || !shouldUseResearch(request)) {
     return undefined;
   }
 
@@ -480,15 +696,16 @@ async function maybeResearch(request: ParsedRequest): Promise<ResearchResult | u
       `Research answer:\n${content}`,
       citations.length ? `Sources:\n${citations.map((citation, index) => `${index + 1}. ${citation}`).join('\n')}` : '',
     ].filter(Boolean).join('\n\n').slice(0, 5200);
-    console.log(`Lexi research done term="${requestLabel(request).slice(0, 60)}" provider=perplexity ms=${elapsedMs(startedAt)}`);
-    return { provider: 'perplexity', context };
+    const researchElapsedMs = elapsedMs(startedAt);
+    console.log(`Lexi research done term="${requestLabel(request).slice(0, 60)}" provider=perplexity ms=${researchElapsedMs}`);
+    return { provider: 'perplexity', context, elapsedMs: researchElapsedMs };
   } catch (error) {
     console.warn('Lexi research skipped: Perplexity request failed', error);
     return undefined;
   }
 }
 
-function shouldUseResearch(request: ParsedRequest): request is { kind: 'text'; value: ExplainRequest } {
+function shouldUseResearch(request: { kind: 'text'; value: ExplainRequest }): boolean {
   if (researchMode === 'off' || researchProvider !== 'perplexity' || !perplexityApiKey) {
     return false;
   }

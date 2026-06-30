@@ -39,6 +39,33 @@ struct AppConfiguration {
         return UserDefaults.standard.bool(forKey: "LexiTTSReadAloudEnabled")
     }
 
+    static var voiceAudioBufferSizeFrames: Int {
+        boundedIntegerSetting(
+            defaultsKey: "LexiVoiceAudioBufferSizeFrames",
+            environmentKey: "LEXI_VOICE_AUDIO_BUFFER_SIZE_FRAMES",
+            defaultValue: 1024,
+            range: 256...4096
+        )
+    }
+
+    static var assemblyAIFinalTranscriptFallbackDelaySeconds: TimeInterval {
+        boundedDoubleSetting(
+            defaultsKey: "LexiAssemblyAIFinalFallbackSeconds",
+            environmentKey: "LEXI_ASSEMBLYAI_FINAL_FALLBACK_SECONDS",
+            defaultValue: 1.2,
+            range: 0.4...2.8
+        )
+    }
+
+    static var voiceTokenFetchTimeoutSeconds: TimeInterval {
+        boundedDoubleSetting(
+            defaultsKey: "LexiVoiceTokenFetchTimeoutSeconds",
+            environmentKey: "LEXI_VOICE_TOKEN_FETCH_TIMEOUT_SECONDS",
+            defaultValue: 4.0,
+            range: 1.0...10.0
+        )
+    }
+
     private static func resolvedProxyBaseURL() -> URL {
         let defaultsValue = UserDefaults.standard.string(forKey: "LexiProxyBaseURL")
         let environmentValue = ProcessInfo.processInfo.environment["LEXI_PROXY_BASE_URL"]
@@ -59,5 +86,19 @@ struct AppConfiguration {
         return [defaultsValue, environmentValue]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
+    }
+
+    private static func boundedIntegerSetting(defaultsKey: String, environmentKey: String, defaultValue: Int, range: ClosedRange<Int>) -> Int {
+        let environmentValue = ProcessInfo.processInfo.environment[environmentKey].flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let defaultsValue = UserDefaults.standard.object(forKey: defaultsKey) != nil ? UserDefaults.standard.integer(forKey: defaultsKey) : nil
+        let value = environmentValue ?? defaultsValue ?? defaultValue
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private static func boundedDoubleSetting(defaultsKey: String, environmentKey: String, defaultValue: TimeInterval, range: ClosedRange<TimeInterval>) -> TimeInterval {
+        let environmentValue = ProcessInfo.processInfo.environment[environmentKey].flatMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let defaultsValue = UserDefaults.standard.object(forKey: defaultsKey) != nil ? UserDefaults.standard.double(forKey: defaultsKey) : nil
+        let value = environmentValue ?? defaultsValue ?? defaultValue
+        return min(max(value, range.lowerBound), range.upperBound)
     }
 }

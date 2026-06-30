@@ -21,10 +21,12 @@ protocol BuddyTranscriptionProvider {
 }
 
 enum BuddyTranscriptionProviderFactory {
+    private static let assemblyAIProvider = AssemblyAITranscriptionProvider()
+
     static func makeProvider() -> any BuddyTranscriptionProvider {
         switch AppConfiguration.voiceProvider {
         case .assemblyAI:
-            return AssemblyAITranscriptionProvider()
+            return assemblyAIProvider
         case .appleSpeech:
             return AppleSpeechTranscriptionProvider()
         }
@@ -32,6 +34,11 @@ enum BuddyTranscriptionProviderFactory {
 
     static func makeFallbackProvider() -> any BuddyTranscriptionProvider {
         AppleSpeechTranscriptionProvider()
+    }
+
+    static func prewarmIfNeeded() {
+        guard AppConfiguration.voiceProvider == .assemblyAI else { return }
+        assemblyAIProvider.prewarmTemporaryToken()
     }
 }
 
@@ -132,7 +139,26 @@ private final class AppleSpeechTranscriptionSession: BuddyStreamingTranscription
 final class AssemblyAITranscriptionProvider: BuddyTranscriptionProvider {
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
-    private let sharedSession = URLSession(configuration: .default)
+    private let tokenQueue = DispatchQueue(label: "com.lexi.assemblyai.token")
+    private var cachedToken: (value: String, expiresAt: Date)?
+    private let sharedSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = AppConfiguration.voiceTokenFetchTimeoutSeconds
+        configuration.timeoutIntervalForResource = AppConfiguration.voiceTokenFetchTimeoutSeconds
+        return URLSession(configuration: configuration)
+    }()
+
+    func prewarmTemporaryToken() {
+        Task {
+            do {
+                _ = try await fetchTemporaryToken(allowCached: false)
+            } catch {
+                print("Lexi voice AssemblyAI prewarm failed: \(error.localizedDescription)")
+            }
+        }
+    }
 
     func startStreamingSession(
         keyterms: [String],
@@ -140,7 +166,9 @@ final class AssemblyAITranscriptionProvider: BuddyTranscriptionProvider {
         onFinalTranscriptReady: @escaping @MainActor (String) -> Void,
         onError: @escaping @MainActor (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
+        let tokenStartedAt = CFAbsoluteTimeGetCurrent()
         let token = try await fetchTemporaryToken()
+        print("Lexi voice AssemblyAI token ready elapsed=\(Int((CFAbsoluteTimeGetCurrent() - tokenStartedAt) * 1000))ms")
         let session = AssemblyAITranscriptionSession(
             token: token,
             keyterms: keyterms,
@@ -153,13 +181,18 @@ final class AssemblyAITranscriptionProvider: BuddyTranscriptionProvider {
         return session
     }
 
-    private func fetchTemporaryToken() async throws -> String {
+    private func fetchTemporaryToken(allowCached: Bool = true) async throws -> String {
+        if allowCached, let token = consumeCachedTemporaryToken() {
+            return token
+        }
+
         var request = URLRequest(url: AppConfiguration.current.proxyBaseURL.appendingPathComponent("transcribe-token"))
         request.httpMethod = "POST"
+        request.timeoutInterval = AppConfiguration.voiceTokenFetchTimeoutSeconds
         if let token = AppConfiguration.current.proxyToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await sharedSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
             throw BuddyVoiceCaptureError.transcriptionProviderUnavailable("AssemblyAI token endpoint is unavailable.")
         }
@@ -168,7 +201,23 @@ final class AssemblyAITranscriptionProvider: BuddyTranscriptionProvider {
               !token.isEmpty else {
             throw BuddyVoiceCaptureError.transcriptionProviderUnavailable("AssemblyAI token response was invalid.")
         }
+        if !allowCached {
+            tokenQueue.sync {
+                cachedToken = (value: token, expiresAt: Date().addingTimeInterval(45))
+            }
+        }
         return token
+    }
+
+    private func consumeCachedTemporaryToken() -> String? {
+        tokenQueue.sync {
+            guard let token = cachedToken, token.expiresAt.timeIntervalSinceNow > 8 else {
+                cachedToken = nil
+                return nil
+            }
+            cachedToken = nil
+            return token.value
+        }
     }
 }
 
@@ -185,7 +234,7 @@ private final class AssemblyAITranscriptionSession: NSObject, BuddyStreamingTran
         let message: String?
     }
 
-    let finalTranscriptFallbackDelaySeconds: TimeInterval = 2.8
+    let finalTranscriptFallbackDelaySeconds: TimeInterval = AppConfiguration.assemblyAIFinalTranscriptFallbackDelaySeconds
     private static let sampleRate = 16_000.0
     private let token: String
     private let keyterms: [String]

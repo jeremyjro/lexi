@@ -8,6 +8,7 @@ struct BuddyCaptureContext {
     let windowTitle: String
     let anchorRect: CGRect?
     let modeLabel: String
+    let textContext: String
 
     var displayTitle: String {
         question.isEmpty ? "Buddy Capture" : question
@@ -23,6 +24,9 @@ struct BuddyCaptureContext {
             if !screenshot.recognizedText.isEmpty {
                 parts.append("OCR: \(screenshot.recognizedText)")
             }
+        }
+        if !textContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("Text context: \(textContext)")
         }
         parts.append("Mode: \(modeLabel)")
         return parts.isEmpty ? "Buddy Capture" : parts.joined(separator: "\n")
@@ -203,7 +207,8 @@ final class BuddyCaptureCoordinator {
                     appName: captureMetadata.appName,
                     windowTitle: captureMetadata.windowTitle,
                     anchorRect: screenshot?.sourceRect,
-                    modeLabel: "Quick Push-to-Talk"
+                    modeLabel: "Quick Push-to-Talk",
+                    textContext: ""
                 ))
             }
         }
@@ -233,8 +238,7 @@ final class BuddyCaptureCoordinator {
             isSelecting = false
         }
 
-        let region = overlay.selectedRegion
-        guard region != nil else {
+        guard let region = overlay.selectedRegion else {
             cancel()
             return
         }
@@ -252,11 +256,7 @@ final class BuddyCaptureCoordinator {
 
             var screenshot: RegionScreenshot?
             do {
-                if let region {
-                    screenshot = try await RegionScreenshotCapture.captureRegion(region)
-                } else {
-                    screenshot = try await RegionScreenshotCapture.captureFocusedWindow()
-                }
+                screenshot = try await RegionScreenshotCapture.captureRegion(region)
             } catch {
                 if question.isEmpty {
                     await MainActor.run {
@@ -281,7 +281,8 @@ final class BuddyCaptureCoordinator {
                     appName: captureMetadata.appName,
                     windowTitle: captureMetadata.windowTitle,
                     anchorRect: region,
-                    modeLabel: "Precise Region"
+                    modeLabel: "Precise Region",
+                    textContext: ""
                 ))
             }
         }
@@ -298,12 +299,6 @@ final class BuddyCaptureCoordinator {
         overlay.hide()
         onActivityChanged?(.idle)
         onCaptureCancelled?()
-    }
-
-    private func missingBuddyPermissions() -> [BuddyPermission] {
-        BuddyPermissions.requiredPermissions
-            .filter { $0 != .accessibility }
-            .filter { !BuddyPermissions.status($0).isGranted }
     }
 
     private func currentWindowMetadata() -> BuddyWindowMetadata {

@@ -17,7 +17,6 @@ final class RawCapturePanelController {
     private let panel: RawCapturePanel
     private var keyMonitor: Any?
     private var localKeyMonitor: Any?
-    private var mouseMonitor: Any?
 
     init() {
         panel = RawCapturePanel()
@@ -30,9 +29,6 @@ final class RawCapturePanelController {
         }
         if let localKeyMonitor {
             NSEvent.removeMonitor(localKeyMonitor)
-        }
-        if let mouseMonitor {
-            NSEvent.removeMonitor(mouseMonitor)
         }
     }
 
@@ -95,10 +91,6 @@ final class RawCapturePanelController {
             guard let self else { return event }
             return self.handleKeyDown(event) ? nil : event
         }
-
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            self?.hide()
-        }
     }
 
     @discardableResult
@@ -157,10 +149,9 @@ final class RawCapturePanel: NSPanel {
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = true
 
-        contentView = NSHostingView(rootView: RawCapturePanelView(viewModel: viewModel) { [weak self] animated in
-            DispatchQueue.main.async {
-                self?.applyTopRightFrame(animated: animated)
-            }
+        contentView = NSHostingView(rootView: RawCapturePanelView(viewModel: viewModel) { [weak self] animated, expanding in
+            // No async dispatch — resize starts on the same frame as the SwiftUI animation.
+            self?.applyTopRightFrame(animated: animated, expanding: expanding)
         })
     }
 
@@ -181,7 +172,7 @@ final class RawCapturePanel: NSPanel {
         let wasExpanded = viewModel.isPanelExpanded
         viewModel.update(status: status, resetExpansion: resetExpansion)
         if isVisible, wasExpanded != viewModel.isPanelExpanded {
-            applyTopRightFrame(animated: true)
+            applyTopRightFrame(animated: true, expanding: viewModel.isPanelExpanded)
         }
     }
 
@@ -192,7 +183,7 @@ final class RawCapturePanel: NSPanel {
 
     @discardableResult
     func requestNestedLookupFromSelection() -> Bool {
-        viewModel.requestNestedLookupFromSelection()
+        viewModel.requestNestedLookup(term: selectedAnswerText)
     }
 
     func beginNestedLookup(term: String) -> UUID? {
@@ -228,14 +219,30 @@ final class RawCapturePanel: NSPanel {
         viewModel.isPanelExpanded ? expandedPanelSize : collapsedPanelSize
     }
 
-    private func applyTopRightFrame(animated: Bool) {
+    private func applyTopRightFrame(animated: Bool, expanding: Bool? = nil) {
         let visibleFrame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 900, height: 700)
         let size = currentPanelSize
         let origin = NSPoint(
             x: max(visibleFrame.minX + panelInset, visibleFrame.maxX - size.width - panelInset),
             y: max(visibleFrame.minY + panelInset, visibleFrame.maxY - size.height - panelInset)
         )
-        setFrame(NSRect(origin: origin, size: size), display: true, animate: animated)
+        let targetFrame = NSRect(origin: origin, size: size)
+        guard animated else {
+            setFrame(targetFrame, display: true)
+            return
+        }
+        // Use NSAnimationContext so the window frame tracks the SwiftUI spring.
+        // Expand: ease-out deceleration matching the spring settle (0.44s).
+        // Collapse: faster ease-in-out (0.28s) for a crisp snap back to pill.
+        let isExpanding = expanding ?? (size == expandedPanelSize)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = isExpanding ? 0.44 : 0.28
+            context.timingFunction = isExpanding
+                ? CAMediaTimingFunction(controlPoints: 0.25, 0.46, 0.45, 0.94) // ease-out
+                : CAMediaTimingFunction(controlPoints: 0.55, 0.00, 0.45, 1.00) // ease-in-out
+            context.allowsImplicitAnimation = true
+            self.animator().setFrame(targetFrame, display: true)
+        }
     }
 
     private var liveSelectedText: String {
@@ -430,38 +437,55 @@ struct RawCapturePanelView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var viewModel: RawCapturePanelViewModel
     @State private var collapseTask: Task<Void, Never>?
-    let onExpansionChanged: (Bool) -> Void
+    // Callback: (animated, expanding) — called synchronously so window resize
+    // starts on the same frame as the SwiftUI animation.
+    let onExpansionChanged: (Bool, Bool) -> Void
+
+    // Expand: slightly bouncy spring — feels responsive, like opening a panel.
+    private var expandAnimation: Animation {
+        .spring(response: 0.44, dampingFraction: 0.72)
+    }
+    // Collapse: fast, well-damped spring — crisp snap back to pill.
+    private var collapseAnimation: Animation {
+        .spring(response: 0.28, dampingFraction: 0.96)
+    }
 
     var body: some View {
         Group {
             if viewModel.isPanelExpanded {
                 expandedPanel
-                    .transition(.scale(scale: 0.94, anchor: .topTrailing).combined(with: .opacity))
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.90, anchor: .topTrailing)),
+                        removal:   .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing))
+                    ))
             } else {
                 collapsedPill
-                    .transition(.scale(scale: 0.96, anchor: .topTrailing).combined(with: .opacity))
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.86, anchor: .topTrailing)),
+                        removal:   .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing))
+                    ))
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: viewModel.isPanelExpanded ? 28 : 27, style: .continuous))
         .onHover { hovering in
             handleHover(hovering)
         }
-        .onChange(of: viewModel.isPanelExpanded) { _, _ in
-            onExpansionChanged(!reduceMotion)
+        .onChange(of: viewModel.isPanelExpanded) { _, expanded in
+            onExpansionChanged(!reduceMotion, expanded)
         }
         .onDisappear {
             collapseTask?.cancel()
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86), value: viewModel.isPanelExpanded)
+        // Fallback animation for state changes that don't come through handleHover.
+        .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.80), value: viewModel.isPanelExpanded)
     }
 
     private func handleHover(_ hovering: Bool) {
         collapseTask?.cancel()
         guard viewModel.status.canCollapseToPill else { return }
-        let animation: Animation? = reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86)
         if hovering {
             guard !viewModel.isPanelExpanded else { return }
-            withAnimation(animation) {
+            withAnimation(reduceMotion ? nil : expandAnimation) {
                 viewModel.setExpanded(true)
             }
         } else {
@@ -469,7 +493,7 @@ struct RawCapturePanelView: View {
             collapseTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 650_000_000)
                 guard !Task.isCancelled else { return }
-                withAnimation(animation) {
+                withAnimation(reduceMotion ? nil : collapseAnimation) {
                     viewModel.setExpanded(false)
                 }
             }
@@ -698,12 +722,8 @@ struct RawCapturePanelView: View {
                 }
                 captureDetails(capture)
             }
-        case .streaming(_, let answer), .answered(_, let answer):
-            ScrollView {
-                answerBubble(answer.isEmpty ? "…" : answer)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .streaming(let capture, let answer), .answered(let capture, let answer):
+            conversationContent(prompt: chatPrompt(for: capture), answer: answer, scrollID: "capture-\(answer.count)")
         case .lookup(let stack):
             lookupContent(stack)
         case .buddyMessage(_, let message):
@@ -730,12 +750,8 @@ struct RawCapturePanelView: View {
                 }
                 buddyDetails(capture)
             }
-        case .buddyStreaming(_, let answer):
-            ScrollView {
-                answerBubble(answer.isEmpty ? "…" : answer)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .buddyStreaming(let capture, let answer):
+            conversationContent(prompt: capture.displayTitle, answer: answer, scrollID: "buddy-\(answer.count)")
         case .buddyError(let capture, let message):
             VStack(alignment: .leading, spacing: 10) {
                 Text("What happened")
@@ -787,15 +803,77 @@ struct RawCapturePanelView: View {
         }
     }
 
-    private func answerBubble(_ answer: String) -> some View {
-        Text(answer)
-            .font(.system(size: 15.5, weight: .regular, design: .rounded))
-            .lineSpacing(5)
-            .foregroundStyle(.primary)
-            .textSelection(.enabled)
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 300, alignment: .topLeading)
+    private func chatPrompt(for capture: CapturedSelection) -> String {
+        guard let question = capture.question?.trimmingCharacters(in: .whitespacesAndNewlines), !question.isEmpty else {
+            return capture.term
+        }
+        return question
+    }
+
+    private func conversationContent(prompt: String, answer: String, scrollID: String) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    chatQuestionBubble(prompt)
+                    chatAnswerBubble(answer.isEmpty ? "…" : answer)
+                    Color.clear
+                        .frame(height: 1)
+                        .id("conversation-bottom")
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear {
+                proxy.scrollTo("conversation-bottom", anchor: .bottom)
+            }
+            .onChange(of: scrollID) { _, _ in
+                proxy.scrollTo("conversation-bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    private func chatQuestionBubble(_ question: String) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("You")
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Text(question)
+                    .font(.system(size: 14.5, weight: .regular, design: .rounded))
+                    .lineSpacing(3)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 320, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(Color.accentColor.opacity(0.20), lineWidth: 0.8))
+            )
+            Spacer(minLength: 42)
+        }
+    }
+
+    private func chatAnswerBubble(_ answer: String) -> some View {
+        HStack(alignment: .top) {
+            Spacer(minLength: 42)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Lexi")
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Text(answer)
+                    .font(.system(size: 15, weight: .regular, design: .rounded))
+                    .lineSpacing(4.5)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 11)
+            .frame(maxWidth: 356, alignment: .leading)
             .background(glassCardBackground(cornerRadius: 18))
+        }
     }
 
     private func glassCardBackground(cornerRadius: CGFloat = 16) -> some View {
@@ -831,34 +909,67 @@ struct RawCapturePanelView: View {
 
     private func lookupContent(_ stack: LookupNavigationStack) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let node = stack.currentNode {
-                if node.answer.isEmpty {
-                    HStack(spacing: 8) {
-                        if reduceMotion {
-                            Text("…")
-                                .font(.system(size: 14, weight: .semibold))
-                        } else {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text("Explaining \"\(node.term)\"…")
-                            .font(.system(size: 14, weight: .medium))
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                } else {
-                    SelectableAnswerView(
-                        text: node.answer,
-                        onSelectionChanged: { viewModel.selectedAnswerText = $0 },
-                        onDoubleClick: { _ in }
-                    )
-                    .padding(12)
-                    .frame(maxWidth: .infinity, minHeight: 320, maxHeight: .infinity)
-                    .background(glassCardBackground(cornerRadius: 18))
-                }
-                if !node.answer.isEmpty {
-                    followUpComposer
-                }
+            lookupConversation(stack)
+            if stack.currentNode?.answer.isEmpty == false {
+                followUpComposer
             }
+        }
+    }
+
+    private func lookupConversation(_ stack: LookupNavigationStack) -> some View {
+        let scrollID = lookupConversationScrollID(stack)
+        return ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(stack.activePath) { node in
+                        chatQuestionBubble(node.term)
+                        if node.answer.isEmpty {
+                            chatLoadingBubble(term: node.term)
+                        } else {
+                            chatAnswerBubble(node.answer)
+                        }
+                    }
+                    Color.clear
+                        .frame(height: 1)
+                        .id("conversation-bottom")
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear {
+                proxy.scrollTo("conversation-bottom", anchor: .bottom)
+            }
+            .onChange(of: scrollID) { _, _ in
+                proxy.scrollTo("conversation-bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    private func lookupConversationScrollID(_ stack: LookupNavigationStack) -> String {
+        stack.activePath
+            .map { "\($0.id.uuidString):\($0.answer.count)" }
+            .joined(separator: "|")
+    }
+
+    private func chatLoadingBubble(term: String) -> some View {
+        HStack(alignment: .top) {
+            Spacer(minLength: 42)
+            HStack(spacing: 8) {
+                if reduceMotion {
+                    Text("…")
+                        .font(.system(size: 14, weight: .semibold))
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text("Answering…")
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 11)
+            .frame(maxWidth: 356, alignment: .leading)
+            .background(glassCardBackground(cornerRadius: 18))
         }
     }
 
@@ -876,7 +987,7 @@ struct RawCapturePanelView: View {
             Button {
                 viewModel.requestFollowUp()
             } label: {
-                Text("Ask")
+                Text("Enter")
                     .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
