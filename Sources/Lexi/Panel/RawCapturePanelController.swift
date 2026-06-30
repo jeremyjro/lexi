@@ -593,13 +593,13 @@ struct RawCapturePanelView: View {
     private var collapsedPillTitle: String {
         switch viewModel.status {
         case .loading:
-            return "Generating answer"
+            return "Thinking…"
         case .streaming:
-            return "Streaming answer"
+            return "Writing…"
         case .buddyLoading:
             return "Reading screen"
         case .buddyStreaming:
-            return "Streaming insight"
+            return "Writing…"
         case .answered, .lookup:
             return "Answer ready"
         default:
@@ -717,7 +717,7 @@ struct RawCapturePanelView: View {
                         ProgressView()
                             .controlSize(.small)
                     }
-                    Text("Asking Lexi…")
+                    Text("Thinking…")
                         .font(.system(size: 14, weight: .medium))
                 }
                 captureDetails(capture)
@@ -731,7 +731,7 @@ struct RawCapturePanelView: View {
                 Text(message)
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
-                Text("If no full-screen overlay appears, use Settings → Permissions to re-check Accessibility and Screen Recording for the installed /Applications/Lexi.app.")
+                Text("If no full-screen overlay appears, open Settings → Permissions and re-check Accessibility and Screen Recording for Lexi.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -745,7 +745,7 @@ struct RawCapturePanelView: View {
                         ProgressView()
                             .controlSize(.small)
                     }
-                    Text("Asking about your screen…")
+                    Text("Reading your screen…")
                         .font(.system(size: 14, weight: .medium))
                 }
                 buddyDetails(capture)
@@ -791,8 +791,9 @@ struct RawCapturePanelView: View {
         case .noSelection(let appName, let windowTitle):
             VStack(alignment: .leading, spacing: 8) {
                 Text("Hold Option + Space while selecting a word or phrase, then release.")
-                metadataRow("App", appName.isEmpty ? "Unknown" : appName)
-                metadataRow("Window", windowTitle.isEmpty ? "Unknown" : windowTitle)
+                if !appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !windowTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    sourceChip("text.quote", friendlyFrom(appName))
+                }
             }
             .font(.system(size: 13))
             .foregroundStyle(.secondary)
@@ -863,11 +864,7 @@ struct RawCapturePanelView: View {
                 Text("Lexi")
                     .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
-                Text(answer)
-                    .font(.system(size: 15, weight: .regular, design: .rounded))
-                    .lineSpacing(4.5)
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
+                MarkdownMessageView(markdown: answer)
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 11)
@@ -900,9 +897,11 @@ struct RawCapturePanelView: View {
                 Text(node.term)
                     .font(.system(size: 17, weight: .semibold, design: .rounded))
                     .lineLimit(2)
-                Text("Depth \(stack.depth) · \(node.sourceLabel)")
-                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary)
+                if stack.depth > 0 {
+                    Text(node.sourceLabel == "Follow-up" ? "Follow-up" : "From your answer")
+                        .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -962,7 +961,7 @@ struct RawCapturePanelView: View {
                     ProgressView()
                         .controlSize(.small)
                 }
-                Text("Answering…")
+                Text("Thinking…")
                     .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
             }
@@ -1047,11 +1046,11 @@ struct RawCapturePanelView: View {
         case .lookup(let stack):
             return stack.depth == 0 ? "Highlight inside answer, then press → to drill" : "← pops up · → drills down or reopens child"
         case .streaming, .buddyStreaming:
-            return "Streaming from Railway…"
+            return "Writing your answer…"
         case .buddyMessage:
             return "Drag a region or press Esc to cancel"
         case .loading, .buddyLoading:
-            return "Waiting for first token…"
+            return "Thinking…"
         case .buddyPermissionMissing:
             return "Grant Buddy Capture permissions"
         case .buddyError:
@@ -1079,17 +1078,17 @@ struct RawCapturePanelView: View {
     private var statusTitle: String {
         switch viewModel.status {
         case .captured:
-            return "Captured"
+            return "Reading"
         case .loading, .buddyLoading:
-            return "Asking"
+            return "Thinking"
         case .buddyMessage:
             return "Buddy"
         case .streaming, .buddyStreaming:
-            return "Streaming"
+            return "Writing"
         case .answered:
-            return "Answered"
+            return "Ready"
         case .lookup(let stack):
-            return stack.depth == 0 ? "Answered" : "Depth \(stack.depth)"
+            return stack.depth == 0 ? "Ready" : "Exploring"
         case .buddyError, .buddyPermissionMissing, .error:
             return "Needs attention"
         case .noSelection:
@@ -1119,29 +1118,28 @@ struct RawCapturePanelView: View {
             Text(capture.term)
                 .font(.system(size: 17, weight: .semibold, design: .rounded))
                 .lineLimit(2)
-            Text("\(capture.appName)" + sourceSuffix(capture.source))
-                .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                .foregroundStyle(.secondary)
+            sourceChip("text.quote", friendlyFrom(capture.appName))
         }
     }
 
     private func captureDetails(_ capture: CapturedSelection) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            metadataRow("Window", capture.windowTitle.isEmpty ? "Unknown" : capture.windowTitle)
-            metadataRow("App", capture.appName)
-            metadataRow("Source", capture.source == .accessibility ? "Accessibility API" : "Clipboard fallback")
+            sourceChip("text.quote", friendlyFrom(capture.appName))
             if let question = capture.question, !question.isEmpty {
-                metadataRow("Question", question)
+                Text(verbatim: question)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Passage")
-                    .font(.caption.weight(.semibold))
+            if !capture.passage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(verbatim: previewSnippet(capture.passage, limit: 140))
+                    .font(.system(size: 12, weight: .regular, design: .rounded))
                     .foregroundStyle(.secondary)
-                Text(capture.passage.isEmpty ? "No surrounding context captured." : capture.passage)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(5)
+                    .italic()
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
         }
@@ -1153,9 +1151,7 @@ struct RawCapturePanelView: View {
             Text(capture.displayTitle)
                 .font(.system(size: 17, weight: .semibold, design: .rounded))
                 .lineLimit(2)
-            Text("\(capture.appName) · Buddy Capture")
-                .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                .foregroundStyle(.secondary)
+            sourceChip("rectangle.dashed", "From your screen")
         }
     }
 
@@ -1173,119 +1169,47 @@ struct RawCapturePanelView: View {
                                 .stroke(Color.primary.opacity(0.12), lineWidth: 1)
                         )
                     VStack(alignment: .leading, spacing: 6) {
-                        metadataRow("Image", "\(screenshot.pixelWidth)×\(screenshot.pixelHeight), \(screenshot.encodedBytes) bytes")
-                        metadataRow("OCR", screenshot.recognizedText.isEmpty ? "No text detected" : "\(screenshot.recognizedText.count) chars")
-                        metadataRow("Source", "Buddy Capture")
+                        sourceChip("rectangle.dashed", "From your screen")
                     }
                 }
             } else {
-                metadataRow("Image", "No screenshot captured")
+                sourceChip("rectangle.dashed", "From your screen")
             }
-
-            if !capture.question.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Question")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(capture.question)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-                        .textSelection(.enabled)
-                }
+            if !capture.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(verbatim: capture.question)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
-
-            metadataRow("Window", capture.windowTitle.isEmpty ? "Unknown" : capture.windowTitle)
-            metadataRow("App", capture.appName)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func metadataRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text(label + ":")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 11, weight: .regular, design: .rounded))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+    private func sourceChip(_ systemImage: String, _ label: String) -> some View {
+        // BRAND: chip accent
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10.5, weight: .semibold))
+            Text(label)
+                .font(.system(size: 11.5, weight: .medium, design: .rounded))
         }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.06), in: Capsule())
     }
 
-    private func sourceSuffix(_ source: CapturedSelection.Source) -> String {
-        source == .accessibility ? " · AX" : " · Clipboard fallback"
-    }
-}
-
-private struct SelectableAnswerView: NSViewRepresentable {
-    let text: String
-    let onSelectionChanged: (String) -> Void
-    let onDoubleClick: (String) -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
+    private func friendlyFrom(_ appName: String) -> String {
+        let trimmed = appName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "Unknown" ? "From your screen" : "From \(trimmed)"
     }
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.borderType = .noBorder
-
-        let textView = LexiSelectableTextView()
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.drawsBackground = false
-        textView.font = NSFont.systemFont(ofSize: 15.5, weight: .regular)
-        textView.textColor = .labelColor
-        textView.textContainerInset = NSSize(width: 0, height: 2)
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
-        textView.delegate = context.coordinator
-        textView.onDoubleClickSelection = onDoubleClick
-        scrollView.documentView = textView
-        return scrollView
-    }
-
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.parent = self
-        guard let textView = scrollView.documentView as? LexiSelectableTextView else { return }
-        if textView.string != text {
-            textView.string = text
-        }
-        textView.font = NSFont.systemFont(ofSize: 15.5, weight: .regular)
-        textView.textColor = .labelColor
-        textView.delegate = context.coordinator
-        textView.onDoubleClickSelection = onDoubleClick
-    }
-
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: SelectableAnswerView
-
-        init(_ parent: SelectableAnswerView) {
-            self.parent = parent
-        }
-
-        func textViewDidChangeSelection(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            parent.onSelectionChanged(textView.selectedText)
-        }
-    }
-}
-
-private final class LexiSelectableTextView: NSTextView {
-    var onDoubleClickSelection: ((String) -> Void)?
-
-    override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
-        guard event.clickCount >= 2 else { return }
-        let text = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        onDoubleClickSelection?(text)
+    private func previewSnippet(_ text: String, limit: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit)) + "…"
     }
 }
 
