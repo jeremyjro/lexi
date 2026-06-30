@@ -31,9 +31,8 @@ struct MarkdownTextView: NSViewRepresentable {
         textView.maxSize = CGSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
         textView.minSize = .zero
         textView.linkTextAttributes = [
-            .foregroundColor: NSColor.controlAccentColor
+            .foregroundColor: NSColor.lexiAccentText
         ]
-        // BRAND: link/accent color
         textView.setMarkdown(markdown, bodySize: bodySize)
         return textView
     }
@@ -43,9 +42,8 @@ struct MarkdownTextView: NSViewRepresentable {
         nsView.delegate = context.coordinator
         nsView.onDoubleClickSelection = onDoubleClick
         nsView.linkTextAttributes = [
-            .foregroundColor: NSColor.controlAccentColor
+            .foregroundColor: NSColor.lexiAccentText
         ]
-        // BRAND: link/accent color
         nsView.setMarkdown(markdown, bodySize: bodySize)
         nsView.invalidateIntrinsicContentSize()
     }
@@ -210,8 +208,12 @@ enum MarkdownBlockParser {
 
     private static func parseHeading(_ line: String) -> (level: Int, text: String)? {
         var hashCount = 0
-        for character in line where character == "#" {
-            hashCount += 1
+        for character in line {
+            if character == "#" {
+                hashCount += 1
+            } else {
+                break
+            }
         }
         guard (1...6).contains(hashCount) else { return nil }
         let remainder = line.dropFirst(hashCount)
@@ -430,7 +432,6 @@ enum MarkdownAttributedStringBuilder {
                     ],
                     range: range
                 )
-                // BRAND: link/accent color
             } else {
                 var font = baseFont
                 var traits = NSFontDescriptor.SymbolicTraits()
@@ -449,7 +450,6 @@ enum MarkdownAttributedStringBuilder {
 
             if let url = run.link {
                 output.addAttribute(.link, value: url, range: range)
-                // BRAND: link/accent color
             }
         }
 
@@ -517,7 +517,6 @@ enum MarkdownAttributedStringBuilder {
         style.firstLineHeadIndent = 12
         style.headIndent = 12
         style.lineBreakMode = .byWordWrapping
-        // BRAND: blockquote accent
         return style.copy() as? NSParagraphStyle ?? style
     }
 

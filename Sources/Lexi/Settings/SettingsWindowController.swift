@@ -71,9 +71,7 @@ private struct SettingsView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
-                // BRAND: replace this text with the real Lexi wordmark view from the brand session.
-                Text("Lexi")
-                    .font(.largeTitle.weight(.bold))
+                LexiWordmark(size: 30, layout: .badgeAndWordmark)
                 Text("Your reading companion.")
                     .font(.title3)
                     .foregroundStyle(.secondary)

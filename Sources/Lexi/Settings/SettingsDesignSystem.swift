@@ -4,12 +4,10 @@ import SwiftUI
 ///
 /// The goal is a calm, warm, productized feel (à la Poke / Devin) rather than a
 /// developer console: generous spacing, a clear hierarchy, friendly copy, and a
-/// single restrained accent. A sibling session owns the real brand tokens
-/// (accent color + wordmark); until those land we lean on the system accent and
-/// leave `// BRAND:` markers where they should be swapped in.
+/// single restrained accent drawn from the shared Lexi brand tokens
+/// (`Color.lexiAccent`).
 enum SettingsTheme {
-    // BRAND: replace with the shared Lexi brand accent once the brand-tokens module lands.
-    static let accent = Color.accentColor
+    static let accent = Color.lexiAccent
 
     enum Spacing {
         static let section: CGFloat = 24
