@@ -62,10 +62,13 @@ enum CompositionIntentDetector {
         guard wholeDeletePrefixes.contains(where: { stripped.hasPrefix($0) }) else { return false }
         // Bare "delete this" with no further qualifier is a whole-selection delete.
         // "delete the commas" / "remove the em dashes" is a transform, not a wipe.
-        let transformTargets = ["dash", "dashes", "hyphen", "hyphens", "comma", "commas",
-                                "space", "spaces", "line", "lines", "word", "words",
-                                "sentence", "sentences", "typo", "typos"]
-        return !transformTargets.contains { stripped.contains($0) }
+        // Match whole words only: substring matching would mis-fire on "delete this
+        // password" ("word"), "erase this headline" ("line"), "cut this command" ("comma").
+        let transformTargets: Set<String> = ["dash", "dashes", "hyphen", "hyphens", "comma", "commas",
+                                             "space", "spaces", "line", "lines", "word", "words",
+                                             "sentence", "sentences", "typo", "typos"]
+        let tokens = Set(tokenize(stripped))
+        return transformTargets.isDisjoint(with: tokens)
     }
 
     // MARK: - Trigger vocabulary
@@ -174,7 +177,10 @@ enum CompositionIntentDetector {
             "is this ", "is that ", "are these ", "are those ", "was this ",
             "define ", "definition of", "meaning of", "what does", "what is",
             "answer this", "answer the", "explain this", "explain the", "explain ",
-            "tell me", "summarize what", "describe what"
+            "tell me"
+            // Note: "summarize"/"describe" are leading compose verbs (step 1 wins),
+            // so "summarize what …" intentionally composes a summary rather than
+            // being answered — no unreachable prefixes listed here.
         ]
         if answerPrefixes.contains(where: { stripped.hasPrefix($0) }) {
             return true
