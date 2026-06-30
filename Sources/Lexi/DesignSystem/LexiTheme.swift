@@ -156,6 +156,32 @@ public extension Color {
     static let lexiAccentWash = Color.lexiDynamic(light: 0xF2A03D, dark: 0xFFB45C).opacity(0.12)
 }
 
+// MARK: - AppKit color bridge
+
+/// Dynamic `NSColor` equivalents of the core brand tokens, for the AppKit
+/// surfaces that can't take a SwiftUI `Color` — chiefly the `NSTextView`-backed
+/// Markdown renderer in the answer panel and the menu-bar home window.
+public extension NSColor {
+
+    /// Builds a light/dark dynamic `NSColor` from two sRGB hex values.
+    static func lexiDynamic(light: UInt32, dark: UInt32) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(srgbHex: isDark ? dark : light)
+        }
+    }
+
+    /// Brand accent — matches ``SwiftUI/Color/lexiAccent``.
+    static let lexiAccent = NSColor.lexiDynamic(light: 0xF2A03D, dark: 0xFFB45C)
+
+    /// AA-compliant accent for links and small emphasis on paper — matches
+    /// ``SwiftUI/Color/lexiAccentText``.
+    static let lexiAccentText = NSColor.lexiDynamic(light: 0xB5650C, dark: 0xFFC988)
+
+    /// Primary warm paper surface — matches ``SwiftUI/Color/lexiPaper``.
+    static let lexiPaper = NSColor.lexiDynamic(light: 0xF7F2E9, dark: 0x1A1714)
+}
+
 // MARK: - Brand gradients
 
 public extension LinearGradient {

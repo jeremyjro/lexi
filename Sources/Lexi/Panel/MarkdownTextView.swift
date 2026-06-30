@@ -31,9 +31,8 @@ struct MarkdownTextView: NSViewRepresentable {
         textView.maxSize = CGSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
         textView.minSize = .zero
         textView.linkTextAttributes = [
-            .foregroundColor: NSColor.controlAccentColor
+            .foregroundColor: NSColor.lexiAccentText
         ]
-        // BRAND: link/accent color
         textView.setMarkdown(markdown, bodySize: bodySize)
         return textView
     }
@@ -43,9 +42,8 @@ struct MarkdownTextView: NSViewRepresentable {
         nsView.delegate = context.coordinator
         nsView.onDoubleClickSelection = onDoubleClick
         nsView.linkTextAttributes = [
-            .foregroundColor: NSColor.controlAccentColor
+            .foregroundColor: NSColor.lexiAccentText
         ]
-        // BRAND: link/accent color
         nsView.setMarkdown(markdown, bodySize: bodySize)
         nsView.invalidateIntrinsicContentSize()
     }
@@ -430,7 +428,6 @@ enum MarkdownAttributedStringBuilder {
                     ],
                     range: range
                 )
-                // BRAND: link/accent color
             } else {
                 var font = baseFont
                 var traits = NSFontDescriptor.SymbolicTraits()
@@ -449,7 +446,6 @@ enum MarkdownAttributedStringBuilder {
 
             if let url = run.link {
                 output.addAttribute(.link, value: url, range: range)
-                // BRAND: link/accent color
             }
         }
 
@@ -517,7 +513,6 @@ enum MarkdownAttributedStringBuilder {
         style.firstLineHeadIndent = 12
         style.headIndent = 12
         style.lineBreakMode = .byWordWrapping
-        // BRAND: blockquote accent
         return style.copy() as? NSParagraphStyle ?? style
     }
 

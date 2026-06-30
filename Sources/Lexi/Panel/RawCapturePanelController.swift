@@ -850,8 +850,8 @@ struct RawCapturePanelView: View {
             .frame(maxWidth: 320, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
-                    .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(Color.accentColor.opacity(0.20), lineWidth: 0.8))
+                    .fill(Color.lexiAccent.opacity(0.12))
+                    .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(Color.lexiAccent.opacity(0.20), lineWidth: 0.8))
             )
             Spacer(minLength: 42)
         }
@@ -1195,10 +1195,10 @@ struct RawCapturePanelView: View {
     }
 
     private func sourceChip(_ systemImage: String, _ label: String) -> some View {
-        // BRAND: chip accent
         HStack(spacing: 5) {
             Image(systemName: systemImage)
                 .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(Color.lexiAccent)
             Text(label)
                 .font(.system(size: 11.5, weight: .medium, design: .rounded))
         }

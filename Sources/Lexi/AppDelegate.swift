@@ -70,10 +70,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "Lexi"
-        // BRAND: Swap this temporary sparkles glyph for the real app mark/wordmark.
-        item.button?.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Lexi")
-        item.button?.imagePosition = .imageLeading
+        item.button?.title = ""
+        item.button?.image = LexiBrand.statusItemImage()
+        item.button?.image?.accessibilityDescription = "Lexi"
+        item.button?.imagePosition = .imageOnly
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked(_:))
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -221,12 +221,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.setContentSize(NSSize(width: 320, height: 420))
         window.center()
         window.isReleasedWhenClosed = false
-        window.backgroundColor = NSColor(
-            calibratedRed: 0.99,
-            green: 0.95,
-            blue: 0.91,
-            alpha: 1.0
-        )
+        window.backgroundColor = .lexiPaper
         return window
     }
 
