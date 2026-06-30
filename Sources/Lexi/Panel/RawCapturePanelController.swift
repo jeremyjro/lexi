@@ -1,6 +1,15 @@
 import AppKit
 import SwiftUI
 
+private let panelShadowMargin: CGFloat = 36
+
+private func panelWindowSize(for cardSize: NSSize) -> NSSize {
+    NSSize(
+        width: cardSize.width + panelShadowMargin * 2,
+        height: cardSize.height + panelShadowMargin * 2
+    )
+}
+
 final class RawCapturePanelController {
     var onDismiss: (() -> Void)?
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
@@ -134,7 +143,7 @@ final class RawCapturePanel: NSPanel {
 
     init() {
         super.init(
-            contentRect: NSRect(origin: .zero, size: expandedPanelSize),
+            contentRect: NSRect(origin: .zero, size: panelWindowSize(for: expandedPanelSize)),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -145,7 +154,7 @@ final class RawCapturePanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         backgroundColor = .clear
         isOpaque = false
-        hasShadow = true
+        hasShadow = false
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = true
 
@@ -221,25 +230,31 @@ final class RawCapturePanel: NSPanel {
 
     private func applyTopRightFrame(animated: Bool, expanding: Bool? = nil) {
         let visibleFrame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 900, height: 700)
-        let size = currentPanelSize
-        let origin = NSPoint(
-            x: max(visibleFrame.minX + panelInset, visibleFrame.maxX - size.width - panelInset),
-            y: max(visibleFrame.minY + panelInset, visibleFrame.maxY - size.height - panelInset)
+        let cardSize = currentPanelSize
+        let cardTopRight = NSPoint(
+            x: visibleFrame.maxX - panelInset,
+            y: visibleFrame.maxY - panelInset
         )
-        let targetFrame = NSRect(origin: origin, size: size)
+        let windowSize = panelWindowSize(for: cardSize)
+        let windowOrigin = NSPoint(
+            x: max(visibleFrame.minX, cardTopRight.x - cardSize.width - panelShadowMargin),
+            y: max(visibleFrame.minY, cardTopRight.y - cardSize.height - panelShadowMargin)
+        )
+        let targetFrame = NSRect(origin: windowOrigin, size: windowSize)
         guard animated else {
             setFrame(targetFrame, display: true)
             return
         }
-        // Use NSAnimationContext so the window frame tracks the SwiftUI spring.
-        // Expand: ease-out deceleration matching the spring settle (0.44s).
-        // Collapse: faster ease-in-out (0.28s) for a crisp snap back to pill.
-        let isExpanding = expanding ?? (size == expandedPanelSize)
+        // 0.42 / 0.82 mirror LexiTheme.Motion.spring's response and dampingFraction.
+        let spring = CASpringAnimation(keyPath: "frame")
+        spring.mass = 1
+        spring.stiffness = pow(2 * Double.pi / 0.42, 2)
+        spring.damping = 4 * Double.pi * 0.82 / 0.42
+        spring.initialVelocity = 0
+        spring.duration = spring.settlingDuration
+        self.animations = ["frame": spring]
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = isExpanding ? 0.44 : 0.28
-            context.timingFunction = isExpanding
-                ? CAMediaTimingFunction(controlPoints: 0.25, 0.46, 0.45, 0.94) // ease-out
-                : CAMediaTimingFunction(controlPoints: 0.55, 0.00, 0.45, 1.00) // ease-in-out
+            context.duration = spring.settlingDuration
             context.allowsImplicitAnimation = true
             self.animator().setFrame(targetFrame, display: true)
         }
@@ -441,27 +456,18 @@ struct RawCapturePanelView: View {
     // starts on the same frame as the SwiftUI animation.
     let onExpansionChanged: (Bool, Bool) -> Void
 
-    // Expand: slightly bouncy spring — feels responsive, like opening a panel.
-    private var expandAnimation: Animation {
-        .spring(response: 0.44, dampingFraction: 0.72)
-    }
-    // Collapse: fast, well-damped spring — crisp snap back to pill.
-    private var collapseAnimation: Animation {
-        .spring(response: 0.28, dampingFraction: 0.96)
-    }
-
     var body: some View {
         Group {
             if viewModel.isPanelExpanded {
                 expandedPanel
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.90, anchor: .topTrailing)),
+                        insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)),
                         removal:   .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing))
                     ))
             } else {
                 collapsedPill
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.86, anchor: .topTrailing)),
+                        insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)),
                         removal:   .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing))
                     ))
             }
@@ -476,8 +482,9 @@ struct RawCapturePanelView: View {
         .onDisappear {
             collapseTask?.cancel()
         }
-        // Fallback animation for state changes that don't come through handleHover.
-        .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.80), value: viewModel.isPanelExpanded)
+        .animation(reduceMotion ? nil : LexiTheme.Motion.spring, value: viewModel.isPanelExpanded)
+        .padding(panelShadowMargin)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 
     private func handleHover(_ hovering: Bool) {
@@ -485,17 +492,13 @@ struct RawCapturePanelView: View {
         guard viewModel.status.canCollapseToPill else { return }
         if hovering {
             guard !viewModel.isPanelExpanded else { return }
-            withAnimation(reduceMotion ? nil : expandAnimation) {
-                viewModel.setExpanded(true)
-            }
+            viewModel.setExpanded(true)
         } else {
             guard viewModel.isPanelExpanded else { return }
             collapseTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 650_000_000)
                 guard !Task.isCancelled else { return }
-                withAnimation(reduceMotion ? nil : collapseAnimation) {
-                    viewModel.setExpanded(false)
-                }
+                viewModel.setExpanded(false)
             }
         }
     }
