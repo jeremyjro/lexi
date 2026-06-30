@@ -2,11 +2,14 @@ import SwiftUI
 
 struct HomeView: View {
     let isEnabled: Bool
+    let recentEvents: [LexiInteractionEventStore.Event]
     let onStartBuddy: () -> Void
     let onToggleEnabled: () -> Void
     let onShowWelcome: () -> Void
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
+    let onOpenRecent: (UUID) -> Void
+    let onClearHistory: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -18,6 +21,9 @@ struct HomeView: View {
             statusBlock
             actionsGroup
             buddyModesGroup
+            if !recentEvents.isEmpty {
+                recentsSection
+            }
             footer
         }
         .padding(18)
@@ -125,6 +131,53 @@ struct HomeView: View {
                 isPrimary: false,
                 action: onStartBuddy
             )
+        }
+    }
+
+    private var recentsSection: some View {
+        sectionCard(title: "Recents", spacing: 8, emphasized: false) {
+            HStack {
+                Spacer(minLength: 0)
+                Button("Clear") {
+                    onClearHistory()
+                }
+                .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(recentEvents.prefix(5), id: \.id) { event in
+                    Button {
+                        onOpenRecent(event.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(event.displayPrompt)
+                                .font(OnboardingTypography.body(13))
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
+                            Text("\(event.relativeTimestamp) · \(event.source) · \(event.appName)")
+                                .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: OnboardingMetrics.smallCornerRadius - 4, style: .continuous)
+                                .fill(OnboardingPalette.mutedSurface(for: colorScheme))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: OnboardingMetrics.smallCornerRadius - 4, style: .continuous)
+                                        .strokeBorder(OnboardingPalette.subtleStroke(for: colorScheme), lineWidth: 1)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 

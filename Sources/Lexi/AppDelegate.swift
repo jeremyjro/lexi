@@ -46,6 +46,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rawCapturePanel.onFollowUpRequested = { [weak self] question, stack in
             self?.requestFollowUp(question: question, stack: stack)
         }
+        rawCapturePanel.recentEventsProvider = { [weak self] in
+            self?.historyEvents(limit: 5) ?? []
+        }
+        rawCapturePanel.onOpenRecent = { [weak self] id in
+            self?.reopenInteraction(id: id)
+        }
         setupBuddyCapture()
         contextSampler.start()
         BuddyTranscriptionProviderFactory.prewarmIfNeeded()
@@ -163,8 +169,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         homePopover.behavior = .transient
-        homePopover.contentViewController = makeHomeContentController()
-        homePopover.contentSize = NSSize(width: 320, height: 420)
+        let contentController = makeHomeContentController()
+        homePopover.contentViewController = contentController
+        homePopover.contentSize = homeSize(for: contentController)
 
         if homePopover.isShown {
             if forceShow {
@@ -183,7 +190,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if homeWindow == nil {
             homeWindow = makeHomeWindow()
         }
-        homeWindow?.contentViewController = makeHomeContentController()
+        let contentController = makeHomeContentController()
+        homeWindow?.contentViewController = contentController
+        homeWindow?.setContentSize(homeSize(for: contentController))
         homeWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -192,6 +201,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSHostingController(
             rootView: HomeView(
                 isEnabled: isEnabled,
+                recentEvents: historyEvents(limit: 5),
                 onStartBuddy: { [weak self] in
                     self?.startBuddyCapture()
                 },
@@ -206,9 +216,64 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onQuit: { [weak self] in
                     self?.quitLexi()
+                },
+                onOpenRecent: { [weak self] id in
+                    self?.reopenInteraction(id: id)
+                },
+                onClearHistory: { [weak self] in
+                    self?.clearInteractionHistory()
                 }
             )
         )
+    }
+
+    private func homeSize(for contentController: NSHostingController<HomeView>) -> NSSize {
+        contentController.view.layoutSubtreeIfNeeded()
+        let fittingSize = contentController.view.fittingSize
+        let width = max(320, fittingSize.width)
+        let height = max(420, fittingSize.height)
+        return NSSize(width: width, height: height)
+    }
+
+    private func historyEvents(limit: Int = 5) -> [LexiInteractionEventStore.Event] {
+        LexiInteractionEventStore.shared.recentEvents(limit: limit)
+    }
+
+    private func clearInteractionHistory() {
+        LexiInteractionEventStore.shared.clearHistory()
+        rawCapturePanel.refreshRecentEvents()
+        if homePopover.isShown {
+            let contentController = makeHomeContentController()
+            homePopover.contentViewController = contentController
+            homePopover.contentSize = homeSize(for: contentController)
+        }
+        if homeWindow != nil {
+            let contentController = makeHomeContentController()
+            homeWindow?.contentViewController = contentController
+            homeWindow?.setContentSize(homeSize(for: contentController))
+        }
+    }
+
+    private func reopenInteraction(id: UUID) {
+        guard let event = LexiInteractionEventStore.shared.event(id: id) else { return }
+        let prompt = event.displayPrompt
+        let answer = event.displayAnswer
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let stack = LookupNavigationStack(
+            rootTerm: prompt,
+            sourceText: "",
+            answer: answer,
+            appName: event.appName,
+            windowTitle: event.windowTitle,
+            sourceLabel: event.source
+        )
+        homePopover.close()
+        homeWindow?.orderOut(nil)
+        rawCapturePanel.show(status: .lookup(stack), anchorRect: nil)
+        rawCapturePanel.refreshRecentEvents()
+        lastAnswer = answer
+        rebuildMenu()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func makeHomeWindow() -> NSWindow {
@@ -256,10 +321,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             cursorBuddy.setActivity(.idle)
         }
         if homePopover.isShown {
-            homePopover.contentViewController = makeHomeContentController()
+            let contentController = makeHomeContentController()
+            homePopover.contentViewController = contentController
+            homePopover.contentSize = homeSize(for: contentController)
         }
         if homeWindow != nil {
-            homeWindow?.contentViewController = makeHomeContentController()
+            let contentController = makeHomeContentController()
+            homeWindow?.contentViewController = contentController
+            homeWindow?.setContentSize(homeSize(for: contentController))
         }
         rebuildMenu()
     }
