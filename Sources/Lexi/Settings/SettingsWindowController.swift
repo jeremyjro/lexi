@@ -4,7 +4,7 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController {
     convenience init(onStartBuddyCapture: @escaping @MainActor () -> Void = {}) {
         let view = SettingsView(onStartBuddyCapture: onStartBuddyCapture)
-            .frame(width: 660, height: 720)
+            .frame(width: 720, height: 780)
         let hostingController = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Lexi Settings"
@@ -22,87 +22,201 @@ private struct SettingsView: View {
     @State private var proxyToken = UserDefaults.standard.string(forKey: "LexiProxyToken") ?? ""
     @State private var selectedVoiceProviderRawValue = AppConfiguration.voiceProvider.rawValue
     @State private var isReadAloudEnabled = AppConfiguration.isTTSReadAloudEnabled
-    @State private var statusText = "Not checked yet."
-    @State private var isCheckingStatus = false
     @State private var permissionStatuses = Dictionary(uniqueKeysWithValues: BuddyPermission.allCases.map { ($0, BuddyPermissions.status($0)) })
+    @State private var showAdvanced = false
+    @State private var connectionState: ConnectionState = .unknown
+    @State private var diagnosticsDetails = "Not checked yet."
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: SettingsTheme.Spacing.section) {
                 header
-                shortcutsSection
-                connectionSection
-                voiceSection
-                statusSection
-                permissionsSection
-                appSection
+
+                SettingsEyebrow(text: "Quick guide")
+                shortcutsCard
+
+                SettingsEyebrow(text: "Voice")
+                voiceCard
+
+                SettingsEyebrow(text: "Permissions")
+                permissionsCard
+
+                DisclosureGroup(isExpanded: $showAdvanced) {
+                    VStack(alignment: .leading, spacing: SettingsTheme.Spacing.section) {
+                        advancedConnectionCard
+                        advancedStatusCard
+                        advancedAboutCard
+                    }
+                    .padding(.top, SettingsTheme.Spacing.section)
+                } label: {
+                    Text("Advanced")
+                        .font(.headline)
+                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear {
+            refreshStatuses()
+            checkStatus()
+        }
+        .onChange(of: selectedVoiceProviderRawValue) { _ in
+            saveSettings()
+        }
+        .onChange(of: isReadAloudEnabled) { _ in
+            saveSettings()
+        }
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "textformat")
-                .font(.system(size: 34, weight: .semibold))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Lexi Settings")
-                    .font(.title2.weight(.semibold))
-                Text("Configure the assistant connection, permissions, and global shortcuts.")
+        HStack(alignment: .center, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                // BRAND: replace this text with the real Lexi wordmark view from the brand session.
+                Text("Lexi")
+                    .font(.largeTitle.weight(.bold))
+                Text("Your reading companion.")
+                    .font(.title3)
                     .foregroundStyle(.secondary)
             }
+
+            Spacer(minLength: 16)
+
+            StatusPill(color: headerStatusColor, text: headerStatusText, animatesPulse: headerStatusPulses)
         }
     }
 
-    private var shortcutsSection: some View {
-        section("Shortcuts") {
-            VStack(alignment: .leading, spacing: 10) {
-                settingsRow("Explain highlighted text", "Hold Option + Space while selecting text, then release to explain")
-                settingsRow("Precise Buddy", "Hold Option + Command, drag a screen region, then release the keys to ask")
-                settingsRow("Quick Buddy", "Hold Control + Option, speak, then release to capture the focused window or cursor screen")
-                settingsRow("Nested lookup", "Inside an answer, highlight text and press →")
-                settingsRow("Close/cancel", "Esc")
+    private var shortcutsCard: some View {
+        SettingsCard(
+            title: "Shortcuts",
+            subtitle: "The hold-to-ask gestures and the quick nested lookup trick.",
+            systemImage: "command",
+            prominent: true
+        ) {
+            VStack(alignment: .leading, spacing: SettingsTheme.Spacing.row) {
+                ShortcutRow(
+                    title: "Explain what you’re reading",
+                    detail: "Hold the keys, highlight any text, release",
+                    keys: ShortcutKey.combo("⌥", "Space")
+                )
+                ShortcutRow(
+                    title: "Precise Buddy",
+                    detail: "Hold, drag a region on screen, release to ask",
+                    keys: ShortcutKey.combo("⌥", "⌘")
+                )
+                ShortcutRow(
+                    title: "Quick Buddy",
+                    detail: "Hold, speak your question, release",
+                    keys: ShortcutKey.combo("⌃", "⌥")
+                )
+                ShortcutRow(
+                    title: "Nested look-up",
+                    detail: "Inside an answer, highlight a word and press →",
+                    keys: ShortcutKey.combo("→")
+                )
+                ShortcutRow(
+                    title: "Dismiss",
+                    detail: "Close the panel or cancel anytime",
+                    keys: ShortcutKey.combo("esc")
+                )
+
                 HStack {
-                    Button("Start Buddy Capture") {
+                    Button("Try it now") {
                         onStartBuddyCapture()
                     }
-                    Spacer()
+                    .buttonStyle(.borderedProminent)
+                    Spacer(minLength: 0)
                 }
+                .padding(.top, 4)
             }
         }
     }
 
-    private var connectionSection: some View {
-        section("Assistant Connection") {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Proxy URL")
-                        .font(.headline)
-                    TextField("Proxy URL", text: $proxyURL)
-                        .textFieldStyle(.roundedBorder)
-                }
+    private var voiceCard: some View {
+        SettingsCard(
+            title: "Voice questions",
+            subtitle: "Choose how Lexi listens when you ask by voice, and whether it reads answers back.",
+            systemImage: "waveform"
+        ) {
+            VStack(alignment: .leading, spacing: SettingsTheme.Spacing.row) {
+                VStack(alignment: .leading, spacing: SettingsTheme.Spacing.tight) {
+                    Picker("Voice questions provider", selection: $selectedVoiceProviderRawValue) {
+                        ForEach(LexiVoiceProvider.allCases) { provider in
+                            Text(provider.displayName).tag(provider.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Proxy Token")
-                        .font(.headline)
-                    SecureField("Proxy token", text: $proxyToken)
-                        .textFieldStyle(.roundedBorder)
-                    Text(proxyToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No local proxy token configured." : "Local proxy token configured.")
+                    Text(voiceProviderHelperText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Toggle("Read answers aloud", isOn: $isReadAloudEnabled)
+                Text("Lexi can speak answers after it finishes reasoning.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var permissionsCard: some View {
+        SettingsCard(
+            title: "Permissions",
+            subtitle: "Grant the system access Lexi needs to watch, capture, and speak on your Mac.",
+            systemImage: "lock.shield"
+        ) {
+            VStack(alignment: .leading, spacing: SettingsTheme.Spacing.row) {
+                ForEach(BuddyPermission.allCases, id: \.self) { permission in
+                    permissionRow(permission)
                 }
 
                 HStack {
-                    Button("Reset to Local") {
+                    Button("Re-check") {
+                        refreshStatuses()
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 4)
+            }
+        }
+    }
+
+    private var advancedConnectionCard: some View {
+        SettingsCard(
+            title: "Connection",
+            subtitle: "Point Lexi at the server you want to use.",
+            systemImage: "network"
+        ) {
+            VStack(alignment: .leading, spacing: SettingsTheme.Spacing.row) {
+                VStack(alignment: .leading, spacing: SettingsTheme.Spacing.tight) {
+                    Text("Server address")
+                        .font(.callout.weight(.semibold))
+                    TextField("Server address", text: $proxyURL)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: SettingsTheme.Spacing.tight) {
+                    Text("Access key")
+                        .font(.callout.weight(.semibold))
+                    SecureField("Access key", text: $proxyToken)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                HStack(spacing: 10) {
+                    Button("Use the built-in server") {
                         proxyURL = AppConfiguration.defaultProxyBaseURL.absoluteString
                         saveSettings()
                     }
-                    Button("Reset to Railway") {
+
+                    Button("Use the hosted server") {
                         proxyURL = "https://lexi-production-9152.up.railway.app"
                         saveSettings()
                     }
-                    Spacer()
+
+                    Spacer(minLength: 0)
+
                     Button("Save") {
                         saveSettings()
                     }
@@ -112,83 +226,46 @@ private struct SettingsView: View {
         }
     }
 
-    private var voiceSection: some View {
-        section("Voice and Read-Aloud") {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Transcription provider")
-                        .font(.headline)
-                    Picker("Transcription provider", selection: $selectedVoiceProviderRawValue) {
-                        ForEach(LexiVoiceProvider.allCases) { provider in
-                            Text(provider.displayName).tag(provider.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    Text(selectedVoiceProviderRawValue == LexiVoiceProvider.assemblyAI.rawValue ? "Requires ASSEMBLYAI_API_KEY on the proxy; falls back to Apple Speech if unavailable." : "Uses local Apple Speech and requires macOS Speech Recognition permission.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Toggle("Read answers aloud with ElevenLabs", isOn: $isReadAloudEnabled)
-                Text("Read-aloud requires ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID on the proxy. It is off by default.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                settingsRow("Voice buffer", "\(AppConfiguration.voiceAudioBufferSizeFrames) frames")
-                settingsRow("AssemblyAI final fallback", "\(String(format: "%.1f", AppConfiguration.assemblyAIFinalTranscriptFallbackDelaySeconds))s")
-
+    private var advancedStatusCard: some View {
+        SettingsCard(
+            title: "Status / health",
+            subtitle: "Copy the raw diagnostics when something needs a closer look.",
+            systemImage: "stethoscope"
+        ) {
+            VStack(alignment: .leading, spacing: SettingsTheme.Spacing.row) {
                 HStack {
-                    Spacer()
-                    Button("Save Voice Settings") {
-                        saveSettings()
+                    StatusPill(color: headerStatusColor, text: headerStatusText, animatesPulse: headerStatusPulses)
+                    Spacer(minLength: 0)
+                    Button("Copy details") {
+                        copyDiagnosticsDetails()
                     }
-                }
-            }
-        }
-    }
-
-    private var statusSection: some View {
-        section("Proxy Status") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(statusText)
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                HStack {
-                    Button(isCheckingStatus ? "Checking…" : "Check Status") {
+                    Button(connectionState == .checking ? "Checking…" : "Check again") {
                         checkStatus()
                     }
-                    .disabled(isCheckingStatus)
-                    Spacer()
+                    .disabled(connectionState == .checking)
                 }
+
+                Text(diagnosticsDetails)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private var permissionsSection: some View {
-        section("Permissions") {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(BuddyPermission.allCases, id: \.self) { permission in
-                    permissionRow(permission)
-                }
-                HStack {
-                    Button("Re-check Permissions") {
-                        refreshStatuses()
-                    }
-                    Spacer()
-                }
-            }
-        }
-    }
-
-    private var appSection: some View {
-        section("Installed App") {
-            VStack(alignment: .leading, spacing: 10) {
+    private var advancedAboutCard: some View {
+        SettingsCard(
+            title: "About this app",
+            subtitle: "The installed bundle, version, and a quick Screen Recording recovery note.",
+            systemImage: "info.circle"
+        ) {
+            VStack(alignment: .leading, spacing: SettingsTheme.Spacing.row) {
                 settingsRow("Bundle ID", Bundle.main.bundleIdentifier ?? "Unknown")
                 settingsRow("App path", Bundle.main.bundleURL.path)
                 settingsRow("Version", versionDescription)
-                Text("If Screen Recording is stuck, remove Lexi from System Settings → Privacy & Security → Screen Recording, add/enable this installed app again, then quit and reopen Lexi.")
+
+                Text("If Screen Recording is stuck, remove Lexi from System Settings → Privacy & Security → Screen Recording, add and enable this installed app again, then quit and reopen Lexi.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -196,28 +273,50 @@ private struct SettingsView: View {
         }
     }
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-            content()
+    private var headerStatusColor: Color {
+        switch connectionState {
+        case .unknown:
+            return .secondary
+        case .checking:
+            return .blue
+        case .connected:
+            return .green
+        case .unreachable:
+            return .orange
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private func settingsRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 150, alignment: .leading)
-            Text(value)
-                .font(.callout)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var headerStatusText: String {
+        switch connectionState {
+        case .unknown, .checking:
+            return "Checking…"
+        case .connected:
+            return "Connected"
+        case .unreachable:
+            return "Can't reach Lexi"
         }
+    }
+
+    private var headerStatusPulses: Bool {
+        connectionState == .checking
+    }
+
+    private var voiceProvider: LexiVoiceProvider {
+        LexiVoiceProvider(rawValue: selectedVoiceProviderRawValue) ?? .appleSpeech
+    }
+
+    private var voiceProviderHelperText: String {
+        switch voiceProvider {
+        case .assemblyAI:
+            return "Higher-accuracy transcription. Falls back to on-device if it’s unavailable."
+        case .appleSpeech:
+            return "Transcribes on your Mac. Needs Speech Recognition permission."
+        }
+    }
+
+    private func copyDiagnosticsDetails() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(diagnosticsDetails, forType: .string)
     }
 
     private func permissionRow(_ permission: BuddyPermission) -> some View {
@@ -240,7 +339,7 @@ private struct SettingsView: View {
                     .foregroundStyle(status.isGranted ? .green : .orange)
             }
 
-            Spacer()
+            Spacer(minLength: 12)
 
             VStack(alignment: .trailing, spacing: 6) {
                 if !status.isGranted {
@@ -252,6 +351,7 @@ private struct SettingsView: View {
                     }
                     .buttonStyle(.bordered)
                 }
+
                 Button("Open Settings") {
                     BuddyPermissions.openSystemSettings(for: permission)
                 }
@@ -267,6 +367,19 @@ private struct SettingsView: View {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
         return "\(version) (\(build))"
+    }
+
+    private func settingsRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 150, alignment: .leading)
+            Text(value)
+                .font(.callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func statusLabel(_ status: BuddyPermissionStatus) -> String {
@@ -314,14 +427,11 @@ private struct SettingsView: View {
         UserDefaults.standard.set(selectedVoiceProviderRawValue, forKey: "LexiVoiceProvider")
         UserDefaults.standard.set(isReadAloudEnabled, forKey: "LexiTTSReadAloudEnabled")
         BuddyTranscriptionProviderFactory.prewarmIfNeeded()
-
-        statusText = "Settings saved. Check status to verify the active connection."
     }
 
     private func checkStatus() {
         saveSettings()
-        isCheckingStatus = true
-        statusText = "Checking proxy…"
+        connectionState = .checking
 
         Task {
             do {
@@ -334,31 +444,33 @@ private struct SettingsView: View {
                 let assemblyTimeout = health.assemblyAITokenTimeoutMs.map { "\($0)ms" } ?? "Unknown"
                 let elevenLabsStatus = health.elevenLabsConfigured.map { $0 ? "Yes" : "No" } ?? "Unknown"
                 let diagnostics = LexiDiagnostics.snapshot.summary
-                await MainActor.run {
-                    statusText = """
-                    Online: \(health.ok ? "Yes" : "No")
-                    Text model: \(health.model)
-                    Nested model: \(health.nestedModel ?? health.model)
-                    Vision model: \(health.visionModel ?? health.model)
-                    Body limit: \(health.jsonBodyLimit ?? "Unknown")
-                    Local token: \(localTokenStatus)
-                    Backend API key: \(backendKeyStatus)
-                    Backend proxy token: \(backendTokenStatus)
-                    AssemblyAI: \(assemblyStatus)
-                    AssemblyAI token timeout: \(assemblyTimeout)
-                    Voice buffer: \(AppConfiguration.voiceAudioBufferSizeFrames) frames
-                    AssemblyAI final fallback: \(String(format: "%.1f", AppConfiguration.assemblyAIFinalTranscriptFallbackDelaySeconds))s
-                    ElevenLabs: \(elevenLabsStatus)
+                let details = """
+                Online: \(health.ok ? "Yes" : "No")
+                Text model: \(health.model)
+                Nested model: \(health.nestedModel ?? health.model)
+                Vision model: \(health.visionModel ?? health.model)
+                Body limit: \(health.jsonBodyLimit ?? "Unknown")
+                Local token: \(localTokenStatus)
+                Backend API key: \(backendKeyStatus)
+                Backend proxy token: \(backendTokenStatus)
+                AssemblyAI: \(assemblyStatus)
+                AssemblyAI token timeout: \(assemblyTimeout)
+                Voice buffer: \(AppConfiguration.voiceAudioBufferSizeFrames) frames
+                AssemblyAI final fallback: \(String(format: "%.1f", AppConfiguration.assemblyAIFinalTranscriptFallbackDelaySeconds))s
+                ElevenLabs: \(elevenLabsStatus)
 
-                    Diagnostics:
-                    \(diagnostics)
-                    """
-                    isCheckingStatus = false
+                Diagnostics:
+                \(diagnostics)
+                """
+
+                await MainActor.run {
+                    connectionState = health.ok ? .connected : .unreachable
+                    diagnosticsDetails = details
                 }
             } catch {
                 await MainActor.run {
-                    statusText = error.localizedDescription
-                    isCheckingStatus = false
+                    connectionState = .unreachable
+                    diagnosticsDetails = error.localizedDescription
                 }
             }
         }
@@ -366,5 +478,12 @@ private struct SettingsView: View {
 
     private func refreshStatuses() {
         permissionStatuses = Dictionary(uniqueKeysWithValues: BuddyPermission.allCases.map { ($0, BuddyPermissions.status($0)) })
+    }
+
+    private enum ConnectionState: Equatable {
+        case unknown
+        case checking
+        case connected
+        case unreachable
     }
 }
