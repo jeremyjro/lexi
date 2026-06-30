@@ -12,6 +12,16 @@ private func panelWindowSize(for cardSize: NSSize) -> NSSize {
 
 final class RawCapturePanelController {
     var onDismiss: (() -> Void)?
+    var recentEventsProvider: (() -> [LexiInteractionEventStore.Event])? {
+        didSet {
+            panel.recentEventsProvider = recentEventsProvider
+        }
+    }
+    var onOpenRecent: ((UUID) -> Void)? {
+        didSet {
+            panel.onOpenRecent = onOpenRecent
+        }
+    }
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
         didSet {
             panel.onNestedLookupRequested = onNestedLookupRequested
@@ -62,7 +72,16 @@ final class RawCapturePanelController {
         panel.currentLookupStack
     }
 
+    var recentEvents: [LexiInteractionEventStore.Event] {
+        panel.recentEvents
+    }
+
+    func refreshRecentEvents() {
+        panel.refreshRecentEvents()
+    }
+
     func show(status: RawCapturePanelStatus, anchorRect: CGRect?) {
+        refreshRecentEvents()
         panel.update(status: status, resetExpansion: true)
         panel.position(anchorRect: anchorRect)
         panel.orderFrontRegardless()
@@ -142,6 +161,16 @@ final class RawCapturePanel: NSPanel {
     private let anchoredPopoverSize = NSSize(width: 372, height: 236)
     private let panelInset: CGFloat = 18
     private var anchorRect: CGRect?
+    var recentEventsProvider: (() -> [LexiInteractionEventStore.Event])? {
+        didSet {
+            viewModel.recentEventsProvider = recentEventsProvider
+        }
+    }
+    var onOpenRecent: ((UUID) -> Void)? {
+        didSet {
+            viewModel.onOpenRecent = onOpenRecent
+        }
+    }
 
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
         get { viewModel.onNestedLookupRequested }
@@ -194,6 +223,14 @@ final class RawCapturePanel: NSPanel {
     func clearPresentationAnchor() {
         anchorRect = nil
         viewModel.anchorRect = nil
+    }
+
+    var recentEvents: [LexiInteractionEventStore.Event] {
+        viewModel.recentEvents
+    }
+
+    func refreshRecentEvents() {
+        viewModel.recentEvents = recentEventsProvider?() ?? []
     }
 
     func update(status: RawCapturePanelStatus, resetExpansion: Bool = false) {
@@ -383,8 +420,12 @@ final class RawCapturePanelViewModel: ObservableObject {
     @Published var selectedAnswerText = ""
     @Published var followUpQuestion = ""
     @Published var isExpanded = true
+    @Published var recentEvents: [LexiInteractionEventStore.Event] = []
+    @Published var isHistoryVisible = false
     @Published var anchorRect: CGRect?
     @Published var anchorArrowAtTop = true
+    var recentEventsProvider: (() -> [LexiInteractionEventStore.Event])?
+    var onOpenRecent: ((UUID) -> Void)?
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)?
     var onFollowUpRequested: ((String, LookupNavigationStack) -> Void)?
 
@@ -411,6 +452,7 @@ final class RawCapturePanelViewModel: ObservableObject {
     func update(status: RawCapturePanelStatus, resetExpansion: Bool = false) {
         selectedAnswerText = ""
         followUpQuestion = ""
+        isHistoryVisible = false
         if resetExpansion {
             isExpanded = !status.canCollapseToPill
         } else if status.shouldAutoExpandOnEntry || !status.canCollapseToPill {
@@ -421,6 +463,13 @@ final class RawCapturePanelViewModel: ObservableObject {
 
     func setExpanded(_ expanded: Bool) {
         isExpanded = status.canCollapseToPill ? expanded : true
+    }
+
+    func toggleHistory() {
+        isHistoryVisible.toggle()
+        if isHistoryVisible {
+            recentEvents = recentEventsProvider?() ?? []
+        }
     }
 
     @discardableResult
@@ -578,10 +627,14 @@ struct RawCapturePanelView: View {
             softDivider
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            if viewModel.isHistoryVisible && !viewModel.recentEvents.isEmpty {
+                recentHistoryDrawer
+            }
             Spacer(minLength: 0)
             HStack(spacing: 8) {
                 Text(footerText)
                 Spacer()
+                historyToggleButton
                 Text(footerShortcutText)
             }
             .font(.system(size: 11, weight: .medium, design: .rounded))
@@ -691,6 +744,72 @@ struct RawCapturePanelView: View {
         }
         .shadow(color: .black.opacity(0.18), radius: 22, x: 0, y: 14)
         .shadow(color: .white.opacity(0.18), radius: 1, x: 0, y: 1)
+    }
+
+    private var recentHistoryDrawer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Recents")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(viewModel.recentEvents.prefix(5), id: \.id) { event in
+                    Button {
+                        viewModel.onOpenRecent?(event.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(event.displayPrompt)
+                                .font(.system(size: 12.5, weight: .medium, design: .rounded))
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
+                            Text("\(event.relativeTimestamp) · \(event.source) · \(event.appName)")
+                                .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color.primary.opacity(0.05))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
+                )
+        )
+    }
+
+    private var historyToggleButton: some View {
+        Button {
+            viewModel.toggleHistory()
+        } label: {
+            Image(systemName: viewModel.isHistoryVisible ? "clock.fill" : "clock")
+                .font(.system(size: 10.5, weight: .semibold))
+                .padding(6)
+                .background(Color.primary.opacity(0.06), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Recent asks")
     }
 
     private var collapsedPill: some View {
