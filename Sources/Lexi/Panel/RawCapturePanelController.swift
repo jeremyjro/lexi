@@ -454,7 +454,7 @@ final class RawCapturePanelViewModel: ObservableObject {
         followUpQuestion = ""
         isHistoryVisible = false
         if resetExpansion {
-            isExpanded = !status.canCollapseToPill
+            isExpanded = status.shouldAutoExpandOnEntry || !status.canCollapseToPill
         } else if status.shouldAutoExpandOnEntry || !status.canCollapseToPill {
             isExpanded = true
         }
@@ -621,24 +621,30 @@ struct RawCapturePanelView: View {
     }
 
     private var expandedPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            topBar
-            header
-            softDivider
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        ZStack(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 16) {
+                topBar
+                header
+                softDivider
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    Text(footerText)
+                    Spacer()
+                    historyToggleButton
+                    Text(footerShortcutText)
+                }
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+            }
             if viewModel.isHistoryVisible && !viewModel.recentEvents.isEmpty {
                 recentHistoryDrawer
+                    .frame(width: 292, alignment: .leading)
+                    .padding(.leading, 8)
+                    .padding(.bottom, 42)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            Spacer(minLength: 0)
-            HStack(spacing: 8) {
-                Text(footerText)
-                Spacer()
-                historyToggleButton
-                Text(footerShortcutText)
-            }
-            .font(.system(size: 11, weight: .medium, design: .rounded))
-            .foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(width: 448, height: 560, alignment: .topLeading)
@@ -755,38 +761,41 @@ struct RawCapturePanelView: View {
                 Spacer(minLength: 0)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(viewModel.recentEvents.prefix(5), id: \.id) { event in
-                    Button {
-                        viewModel.onOpenRecent?(event.id)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(event.displayPrompt)
-                                .font(.system(size: 12.5, weight: .medium, design: .rounded))
-                                .foregroundStyle(.primary)
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .multilineTextAlignment(.leading)
-                            Text("\(event.relativeTimestamp) · \(event.source) · \(event.appName)")
-                                .font(.system(size: 10.5, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(viewModel.recentEvents.prefix(5), id: \.id) { event in
+                        Button {
+                            viewModel.onOpenRecent?(event.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(event.displayPrompt)
+                                    .font(.system(size: 12.5, weight: .medium, design: .rounded))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .multilineTextAlignment(.leading)
+                                Text("\(event.relativeTimestamp) · \(event.source) · \(event.appName)")
+                                    .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.primary.opacity(0.05))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
+                                    )
+                            )
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 9)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.primary.opacity(0.05))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
-                                )
-                        )
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
+            .frame(maxHeight: 160)
         }
         .padding(12)
         .background(
@@ -797,6 +806,7 @@ struct RawCapturePanelView: View {
                         .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
                 )
         )
+        .shadow(color: .black.opacity(0.10), radius: 10, x: 0, y: 6)
     }
 
     private var historyToggleButton: some View {

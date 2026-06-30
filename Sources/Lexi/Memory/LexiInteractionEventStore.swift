@@ -85,7 +85,7 @@ final class LexiInteractionEventStore {
         let events = decodedEvents(limit: 240)
         guard !queryTerms.isEmpty, !events.isEmpty else { return "" }
         let ranked = events.compactMap { event -> (Int, Event)? in
-            let haystack = "\(event.displayPrompt) \(event.displayAnswer) \(event.appName) \(event.windowTitle)".lowercased()
+            let haystack = "\(event.promptPreview) \(event.answerPreview) \(event.appName) \(event.windowTitle)".lowercased()
             let score = queryTerms.reduce(0) { partial, term in
                 partial + (haystack.contains(term) ? 1 : 0)
             }
@@ -98,7 +98,7 @@ final class LexiInteractionEventStore {
         .prefix(limit)
 
         return ranked.map { _, event in
-            "- [\(event.source), route=\(event.route.isEmpty ? "unknown" : event.route)] \(event.displayPrompt) → \(event.displayAnswer)"
+            "- [\(event.source), route=\(event.route.isEmpty ? "unknown" : event.route)] \(event.promptPreview) → \(event.answerPreview)"
         }.joined(separator: "\n")
     }
 

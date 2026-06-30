@@ -270,7 +270,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         homePopover.close()
         homeWindow?.orderOut(nil)
         rawCapturePanel.show(status: .lookup(stack), anchorRect: nil)
-        rawCapturePanel.update(status: .lookup(stack))
         rawCapturePanel.refreshRecentEvents()
         lastAnswer = answer
         rebuildMenu()
