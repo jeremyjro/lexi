@@ -191,11 +191,6 @@ final class RawCapturePanel: NSPanel {
         viewModel.currentLookupStack
     }
 
-    var isAnchoredHighlightPopover: Bool {
-        guard panel.isVisible else { return false }
-        return panel.isAnchoredHighlightPopover
-    }
-
     func clearPresentationAnchor() {
         anchorRect = nil
         viewModel.anchorRect = nil
@@ -257,7 +252,7 @@ final class RawCapturePanel: NSPanel {
         viewModel.isPanelExpanded ? expandedPanelSize : collapsedPanelSize
     }
 
-    private var isAnchoredHighlightPopover: Bool {
+    var isAnchoredHighlightPopover: Bool {
         guard anchorRect != nil,
               case .lookup(let stack) = viewModel.status,
               stack.depth == 0,
@@ -284,7 +279,7 @@ final class RawCapturePanel: NSPanel {
             )
             let fitsAbove = aboveOrigin.y + windowSize.height <= visible.maxY
             let fitsBelow = belowOrigin.y >= visible.minY
-            let shouldShowBelow = fitsBelow && (!fitsAbove || abs(anchorPoint.y - visible.minY) < abs(visible.maxY - anchorPoint.y))
+            let shouldShowBelow = fitsBelow && (!fitsAbove || abs(anchorPoint.y - visible.minY) > abs(visible.maxY - anchorPoint.y))
             windowOrigin = shouldShowBelow ? belowOrigin : aboveOrigin
             viewModel.anchorArrowAtTop = shouldShowBelow
         } else {
@@ -638,16 +633,19 @@ struct RawCapturePanelView: View {
                 Spacer(minLength: 0)
             }
 
-            MarkdownTextView(
-                markdown: compactAnswer,
-                bodySize: 15.5,
-                onSelectionChanged: { viewModel.selectedAnswerText = $0 },
-                onDoubleClick: { text in
-                    viewModel.selectedAnswerText = text
-                    _ = viewModel.requestNestedLookup(term: text)
-                }
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView(.vertical, showsIndicators: true) {
+                MarkdownTextView(
+                    markdown: compactAnswer,
+                    bodySize: 15.5,
+                    onSelectionChanged: { viewModel.selectedAnswerText = $0 },
+                    onDoubleClick: { text in
+                        viewModel.selectedAnswerText = text
+                        _ = viewModel.requestNestedLookup(term: text)
+                    }
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 120)
 
             sourceCitations(for: compactAnswer)
 
