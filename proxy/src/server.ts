@@ -735,9 +735,16 @@ function planBuddyResearch(value: BuddyExplainRequest): ResearchIntent | undefin
   if (researchMode === 'always') {
     return { query: buildBuddyResearchQuery(value), label };
   }
-  // A pure "how do I use this UI" question with no named entity on screen is
-  // about operating the app, not an external fact — leave it to vision.
-  if (question && isLocalUiQuestion(question) && !hasNamedEntity(ocr)) {
+  // A pure "how do I use this UI" question with no named entity anywhere is
+  // about operating the app, not an external fact — leave it to vision. But a
+  // factual/entity question phrased with "where is…"/"how to…" still researches.
+  if (
+    question &&
+    isLocalUiQuestion(question) &&
+    !hasNamedEntity(ocr) &&
+    !hasNamedEntity(question) &&
+    !looksLikeFactualLookup(question)
+  ) {
     return undefined;
   }
   const warranted =
@@ -758,8 +765,9 @@ function planFollowUpResearch(value: FollowUpExplainRequest): ResearchIntent | u
     return { query: buildFollowUpResearchQuery(value), label: question };
   }
   // Most follow-ups are about the answer already on screen; only reach for the
-  // web when the question asks for an external fact or names a real entity.
-  if (isLocalUiQuestion(question)) {
+  // web when the question asks for an external fact or names a real entity. A
+  // factual/entity question phrased with "where is…"/"how to…" still researches.
+  if (isLocalUiQuestion(question) && !hasNamedEntity(question) && !looksLikeFactualLookup(question)) {
     return undefined;
   }
   const warranted = looksLikeFactualLookup(question) || hasNamedEntity(question);

@@ -65,6 +65,30 @@ test('planResearch skips when buddy has neither question nor OCR (vision only)',
   assert.equal(intent, undefined);
 });
 
+test('planResearch researches a factual follow-up phrased as "where is X based?"', () => {
+  const req = {
+    kind: 'followup',
+    value: {
+      question: 'where is Anthropic based?',
+      rootTerm: 'Claude',
+      rootSourceText: '',
+      parentTerm: 'Claude',
+      parentAnswer: 'Claude is an AI assistant.',
+      depth: 1,
+      windowTitle: '',
+      appName: 'Safari',
+    },
+  } as ParsedRequest;
+  const intent = planResearch(req);
+  assert.ok(intent, 'factual "where is" follow-up should still research');
+  assert.match(intent!.query, /Anthropic/);
+});
+
+test('planResearch researches a buddy voice question naming an entity with no OCR', () => {
+  const intent = planResearch(buddyRequest({ question: 'where is Anthropic based?', ocrText: '' }));
+  assert.ok(intent, 'entity question with no OCR should still research');
+});
+
 test('buildInferencePlan marks buddy research auto and keeps the vision model', () => {
   const req = buddyRequest({ ocrText: 'Anthropic' });
   const intent = planResearch(req);
