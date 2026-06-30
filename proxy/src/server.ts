@@ -39,7 +39,9 @@ const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
 const researchProvider = process.env.LEXI_RESEARCH_PROVIDER ?? (perplexityApiKey ? 'perplexity' : 'none');
 const researchMode = process.env.LEXI_RESEARCH_MODE ?? 'auto';
 const perplexityModel = process.env.PERPLEXITY_MODEL ?? 'sonar-pro';
-const perplexityEndpoint = process.env.PERPLEXITY_ENDPOINT ?? 'https://api.perplexity.ai/v1/sonar';
+const perplexityEndpoint = process.env.PERPLEXITY_ENDPOINT ?? 'https://api.perplexity.ai/chat/completions';
+const RESEARCH_SYSTEM_PROMPT =
+  'You are Lexi Research, a source-grounded research agent. Identify exactly what the reader is asking about — the specific company, product, person, organization, or niche term — and return current, factual, source-backed information. Lead with what the entity actually is and the key concrete facts (real name, what it does, who is behind it, current status, important numbers or dates). Prefer authoritative or primary sources. If the subject is ambiguous, give the most likely identification and briefly note alternatives. Be concise; do not hedge.';
 
 const ALLOWED_IMAGE_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
 type AllowedImageMediaType = (typeof ALLOWED_IMAGE_MEDIA_TYPES)[number];
@@ -186,7 +188,8 @@ app.post('/explain', async (req, res) => {
   let firstDeltaAt: number | undefined;
   let outputCharacters = 0;
   const termForLog = requestLabel(request).slice(0, 60);
-  const plan = buildInferencePlan(request);
+  const researchIntent = planResearch(request);
+  const plan = buildInferencePlan(request, researchIntent);
   const systemBlocks = request.kind === 'buddy'
     ? [
         { type: 'text' as const, text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } },
@@ -205,7 +208,7 @@ app.post('/explain', async (req, res) => {
     proxyAcceptedMs: elapsedMs(requestStartedAt),
   });
 
-  const research = await maybeResearch(request, plan);
+  const research = await maybeResearch(request, plan, researchIntent);
   const messageContent = buildMessageContent(request, research);
 
   if (research) {
@@ -367,9 +370,21 @@ app.post('/compose', async (req, res) => {
   }
 });
 
-app.listen(port, host, () => {
-  console.log(`Lexi proxy listening on http://${host}:${port}`);
-});
+// Allow tests to import the research/plan helpers without binding a port.
+if (process.env.LEXI_NO_LISTEN !== '1') {
+  app.listen(port, host, () => {
+    console.log(`Lexi proxy listening on http://${host}:${port}`);
+  });
+}
+
+export {
+  buildInferencePlan,
+  planResearch,
+  maybeResearch,
+  buildMessageContent,
+  extractResearchSources,
+};
+export type { ParsedRequest, ResearchIntent, ResearchResult, InferencePlan };
 
 type ProxyErrorCode =
   | 'payload_too_large'
@@ -458,6 +473,20 @@ type ResearchResult = {
   provider: 'perplexity';
   context: string;
   elapsedMs: number;
+};
+
+// A decision (made before inference) that a request warrants live web research,
+// plus the text query to send to Perplexity. Computed once per request so the
+// inference plan and the research call agree on whether research runs.
+type ResearchIntent = {
+  query: string;
+  label: string;
+};
+
+type PerplexityResponse = {
+  choices?: Array<{ message?: { content?: string } }>;
+  citations?: unknown[];
+  search_results?: Array<{ title?: unknown; url?: unknown; date?: unknown }>;
 };
 
 type RequestParseResult =
@@ -601,23 +630,29 @@ function parseImage(rawData: unknown, rawMediaType: unknown): BuddyImage | undef
   return { mediaType: resolvedMediaType, data: base64 };
 }
 
-function buildInferencePlan(request: ParsedRequest): InferencePlan {
+function buildInferencePlan(request: ParsedRequest, research: ResearchIntent | undefined): InferencePlan {
+  const researchPolicy: ResearchPolicy = research
+    ? (researchMode === 'always' ? 'required' : 'auto')
+    : 'off';
+
   switch (request.kind) {
     case 'buddy':
+      // Buddy always needs the vision model (an image may be attached); when we
+      // also research, allow a few more tokens and mark it as a deeper route.
       return {
-        route: 'buddy_vision',
-        latencyTier: 'standard',
-        researchPolicy: 'off',
+        route: research ? 'web_research' : 'buddy_vision',
+        latencyTier: research ? 'deep' : 'standard',
+        researchPolicy,
         model: visionModel,
-        maxTokens: 800,
+        maxTokens: research ? 900 : 800,
       };
     case 'followup':
       return {
-        route: 'followup',
+        route: research ? 'web_research' : 'followup',
         latencyTier: 'standard',
-        researchPolicy: 'off',
+        researchPolicy,
         model: nestedModel,
-        maxTokens: 600,
+        maxTokens: research ? 700 : 600,
       };
     case 'text':
       if (request.value.lineage) {
@@ -629,11 +664,11 @@ function buildInferencePlan(request: ParsedRequest): InferencePlan {
           maxTokens: 480,
         };
       }
-      if (shouldUseResearch(request)) {
+      if (research) {
         return {
           route: 'web_research',
           latencyTier: researchMode === 'always' ? 'deep' : 'standard',
-          researchPolicy: researchMode === 'always' ? 'required' : 'auto',
+          researchPolicy,
           model,
           maxTokens: 700,
         };
@@ -648,13 +683,130 @@ function buildInferencePlan(request: ParsedRequest): InferencePlan {
   }
 }
 
-async function maybeResearch(request: ParsedRequest, plan: InferencePlan): Promise<ResearchResult | undefined> {
-  if (plan.researchPolicy === 'off' || request.kind !== 'text' || !shouldUseResearch(request)) {
+// Decide, before inference, whether a request warrants live web research and
+// build the Perplexity query. Runs for ALL request kinds (text, buddy/vision,
+// follow-up) so screenshot/voice captures that point at a company/product/term
+// get real research instead of surface-level screen narration.
+function planResearch(request: ParsedRequest): ResearchIntent | undefined {
+  if (researchMode === 'off' || researchProvider !== 'perplexity' || !perplexityApiKey) {
+    return undefined;
+  }
+  switch (request.kind) {
+    case 'text':
+      return planTextResearch(request.value);
+    case 'buddy':
+      return planBuddyResearch(request.value);
+    case 'followup':
+      return planFollowUpResearch(request.value);
+  }
+}
+
+function planTextResearch(value: ExplainRequest): ResearchIntent | undefined {
+  if (value.lineage) {
+    return undefined;
+  }
+  const term = value.term.trim();
+  if (researchMode === 'always') {
+    return term || value.question ? { query: buildTextResearchQuery(value), label: term || value.question || 'text' } : undefined;
+  }
+  if (!term) {
+    return undefined;
+  }
+  const warranted =
+    Boolean(value.question) ||
+    !value.passage ||
+    /[-/0-9]/.test(term) ||
+    /\s/.test(term) ||
+    /^[A-Z0-9]{2,}$/.test(term) ||
+    /[A-Z]/.test(term.slice(1)) ||
+    term.length > 14;
+  return warranted ? { query: buildTextResearchQuery(value), label: term } : undefined;
+}
+
+function planBuddyResearch(value: BuddyExplainRequest): ResearchIntent | undefined {
+  const question = value.question.trim();
+  const ocr = (value.ocrText ?? '').trim();
+  // Perplexity is text-only: without a question or OCR text there is nothing to
+  // research (the screenshot pixels alone can't be sent), so fall back to vision.
+  if (!question && !ocr) {
+    return undefined;
+  }
+  const label = question || ocr.slice(0, 60);
+  if (researchMode === 'always') {
+    return { query: buildBuddyResearchQuery(value), label };
+  }
+  // A pure "how do I use this UI" question with no named entity on screen is
+  // about operating the app, not an external fact — leave it to vision.
+  if (question && isLocalUiQuestion(question) && !hasNamedEntity(ocr)) {
+    return undefined;
+  }
+  const warranted =
+    looksLikeFactualLookup(question) ||
+    hasNamedEntity(question) ||
+    looksLikeFactualLookup(ocr) ||
+    hasNamedEntity(ocr) ||
+    ocr.length > 0; // text visible on screen almost always names something worth grounding
+  return warranted ? { query: buildBuddyResearchQuery(value), label } : undefined;
+}
+
+function planFollowUpResearch(value: FollowUpExplainRequest): ResearchIntent | undefined {
+  const question = value.question.trim();
+  if (!question) {
+    return undefined;
+  }
+  if (researchMode === 'always') {
+    return { query: buildFollowUpResearchQuery(value), label: question };
+  }
+  // Most follow-ups are about the answer already on screen; only reach for the
+  // web when the question asks for an external fact or names a real entity.
+  if (isLocalUiQuestion(question)) {
+    return undefined;
+  }
+  const warranted = looksLikeFactualLookup(question) || hasNamedEntity(question);
+  return warranted ? { query: buildFollowUpResearchQuery(value), label: question } : undefined;
+}
+
+// True for "what/who is X", "tell me about X", market-cap/founder/etc. lookups.
+function looksLikeFactualLookup(text: string): boolean {
+  const t = text.trim();
+  if (!t) {
+    return false;
+  }
+  if (/\b(who|what|which|where|when)\b.{0,40}\b(is|are|was|were|founded|founder|makes?|owns?|means?|does|do|ceo|headquarter|based|company|stock|ticker|product|app)\b/i.test(t)) {
+    return true;
+  }
+  return /\b(who is|who's|what is|what's|whats|tell me about|look up|research|how much|net worth|market cap|revenue|valuation|stock price|share price)\b/i.test(t);
+}
+
+// Loose proper-noun / acronym / ticker detector — true when text likely names a
+// real-world entity (company, product, person) worth researching.
+function hasNamedEntity(text: string): boolean {
+  const t = text.trim();
+  if (!t) {
+    return false;
+  }
+  if (/\b[A-Z]{2,6}\b/.test(t)) {
+    return true;
+  }
+  return /\b[A-Z][a-z]{2,}\b/.test(t);
+}
+
+// Questions about driving the UI itself rather than understanding external facts.
+function isLocalUiQuestion(text: string): boolean {
+  return /\b(how do i|how can i|how to|where is|which button|click|tap|close this|open this|undo|redo|shortcut|keyboard|scroll|drag|resize)\b/i.test(text);
+}
+
+async function maybeResearch(
+  request: ParsedRequest,
+  plan: InferencePlan,
+  intent: ResearchIntent | undefined,
+): Promise<ResearchResult | undefined> {
+  if (plan.researchPolicy === 'off' || !intent) {
     return undefined;
   }
 
-  const query = buildResearchQuery(request.value);
   const startedAt = performance.now();
+  const label = intent.label.slice(0, 60);
   try {
     const response = await fetch(perplexityEndpoint, {
       method: 'POST',
@@ -665,74 +817,84 @@ async function maybeResearch(request: ParsedRequest, plan: InferencePlan): Promi
       body: JSON.stringify({
         model: perplexityModel,
         messages: [
-          {
-            role: 'system',
-            content: 'You are Lexi Research, a source-grounded research agent. Find exact definitions, current facts, names, organizations, products, and niche terms. Prefer authoritative or primary sources. If the term is ambiguous, say so and separate meanings.',
-          },
-          { role: 'user', content: query },
+          { role: 'system', content: RESEARCH_SYSTEM_PROMPT },
+          { role: 'user', content: intent.query },
         ],
         max_tokens: 900,
         temperature: 0.1,
-        search_mode: 'web',
-        return_related_questions: false,
       }),
     });
 
     if (!response.ok) {
-      console.warn(`Lexi research skipped: Perplexity returned HTTP ${response.status}`);
+      const detail = await safeReadBody(response);
+      console.warn(
+        `Lexi research FAILED: Perplexity HTTP ${response.status} kind=${request.kind} term="${label}" endpoint=${perplexityEndpoint} model=${perplexityModel} detail=${detail}`,
+      );
       return undefined;
     }
 
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }>; citations?: unknown };
+    const payload = (await response.json()) as PerplexityResponse;
     const content = stringField(payload.choices?.[0]?.message?.content).slice(0, 4200);
     if (!content) {
+      console.warn(`Lexi research returned no content: kind=${request.kind} term="${label}" model=${perplexityModel}`);
       return undefined;
     }
-    const citations = Array.isArray(payload.citations)
-      ? payload.citations.map((citation) => stringField(citation)).filter(Boolean).slice(0, 8)
-      : [];
+    const sources = extractResearchSources(payload);
     const context = [
       `Provider: Perplexity ${perplexityModel}`,
       `Research answer:\n${content}`,
-      citations.length ? `Sources:\n${citations.map((citation, index) => `${index + 1}. ${citation}`).join('\n')}` : '',
+      sources.length ? `Sources:\n${sources.map((source, index) => `${index + 1}. ${source}`).join('\n')}` : '',
     ].filter(Boolean).join('\n\n').slice(0, 5200);
     const researchElapsedMs = elapsedMs(startedAt);
-    console.log(`Lexi research done term="${requestLabel(request).slice(0, 60)}" provider=perplexity ms=${researchElapsedMs}`);
+    console.log(
+      `Lexi research done kind=${request.kind} term="${label}" provider=perplexity ms=${researchElapsedMs} sources=${sources.length}`,
+    );
     return { provider: 'perplexity', context, elapsedMs: researchElapsedMs };
   } catch (error) {
-    console.warn('Lexi research skipped: Perplexity request failed', error);
+    console.warn(
+      `Lexi research FAILED: Perplexity request errored kind=${request.kind} term="${label}" endpoint=${perplexityEndpoint}`,
+      error,
+    );
     return undefined;
   }
 }
 
-function shouldUseResearch(request: { kind: 'text'; value: ExplainRequest }): boolean {
-  if (researchMode === 'off' || researchProvider !== 'perplexity' || !perplexityApiKey) {
-    return false;
+// Perplexity returns sources in `search_results` (objects with title/url) on
+// current models, and historically as a `citations` array of bare URLs. Prefer
+// the richer search_results and fall back to citations.
+function extractResearchSources(payload: PerplexityResponse): string[] {
+  const sources: string[] = [];
+  if (Array.isArray(payload.search_results)) {
+    for (const result of payload.search_results) {
+      const title = stringField(result?.title);
+      const url = stringField(result?.url);
+      if (url) {
+        sources.push(title ? `${title} — ${url}` : url);
+      } else if (title) {
+        sources.push(title);
+      }
+    }
   }
-  if (request.kind !== 'text' || request.value.lineage) {
-    return false;
+  if (sources.length === 0 && Array.isArray(payload.citations)) {
+    for (const citation of payload.citations) {
+      const url = stringField(citation);
+      if (url) {
+        sources.push(url);
+      }
+    }
   }
-  if (researchMode === 'always') {
-    return true;
-  }
-
-  const term = request.value.term.trim();
-  if (!term) {
-    return false;
-  }
-  if (request.value.question || !request.value.passage) {
-    return true;
-  }
-  if (/[-/0-9]/.test(term) || /\s/.test(term)) {
-    return true;
-  }
-  if (/^[A-Z0-9]{2,}$/.test(term) || /[A-Z]/.test(term.slice(1))) {
-    return true;
-  }
-  return term.length > 14;
+  return sources.slice(0, 8);
 }
 
-function buildResearchQuery(input: ExplainRequest): string {
+async function safeReadBody(response: Response): Promise<string> {
+  try {
+    return (await response.text()).slice(0, 300).replace(/\s+/g, ' ').trim() || '(empty body)';
+  } catch {
+    return '(unreadable body)';
+  }
+}
+
+function buildTextResearchQuery(input: ExplainRequest): string {
   return `Research the highlighted term for Lexi. Return source-grounded facts that help answer accurately.
 
 TERM: ${input.term}
@@ -742,6 +904,28 @@ APP: ${input.appName || '(unknown)'}
 READER QUESTION: ${input.question || '(none)'}
 
 Focus on exact definition, specific entity/name identification, current factual context, and ambiguity. Keep it concise but cite/source the claims.`;
+}
+
+function buildBuddyResearchQuery(input: BuddyExplainRequest): string {
+  return `Research what the reader is pointing at on their screen for Lexi. Identify the specific entity (company, product, person, organization, or term) and return source-grounded, current facts.
+
+SPOKEN QUESTION: ${input.question || '(none — the reader pointed without speaking)'}
+TEXT VISIBLE ON SCREEN (OCR): ${input.ocrText || '(none)'}
+WINDOW TITLE: ${input.windowTitle || '(unknown)'}
+APP: ${input.appName || '(unknown)'}
+
+Identify exactly what this is (real name, what it does, who is behind it, current status, key numbers or dates). If ambiguous, give the most likely identification and note alternatives. Be concise and cite sources.`;
+}
+
+function buildFollowUpResearchQuery(input: FollowUpExplainRequest): string {
+  return `Research to answer a reader's follow-up question for Lexi. Return source-grounded, current facts.
+
+FOLLOW-UP QUESTION: ${input.question}
+TOPIC BEING DISCUSSED: ${input.parentTerm || input.rootTerm}
+ROOT TERM: ${input.rootTerm}
+APP: ${input.appName || '(unknown)'}
+
+Focus on the specific facts the question asks for (names, numbers, dates, current status, definitions). Be concise and cite sources.`;
 }
 
 function requestLabel(request: ParsedRequest): string {
@@ -758,15 +942,18 @@ function requestLabel(request: ParsedRequest): string {
 function buildMessageContent(request: ParsedRequest, research?: ResearchResult): Anthropic.ContentBlockParam[] | string {
   switch (request.kind) {
     case 'buddy':
-      return buildBuddyMessageContent(request);
+      return buildBuddyMessageContent(request, research);
     case 'followup':
-      return buildFollowUpUserMessage(request.value);
+      return buildFollowUpUserMessage({ ...request.value, ...(research ? { researchContext: research.context } : {}) });
     case 'text':
       return buildUserMessage({ ...request.value, ...(research ? { researchContext: research.context } : {}) });
   }
 }
 
-function buildBuddyMessageContent(request: { value: BuddyExplainRequest; image?: BuddyImage }): Anthropic.ContentBlockParam[] {
+function buildBuddyMessageContent(
+  request: { value: BuddyExplainRequest; image?: BuddyImage },
+  research?: ResearchResult,
+): Anthropic.ContentBlockParam[] {
   const blocks: Anthropic.ContentBlockParam[] = [];
   if (request.image) {
     blocks.push({
@@ -774,7 +961,10 @@ function buildBuddyMessageContent(request: { value: BuddyExplainRequest; image?:
       source: { type: 'base64', media_type: request.image.mediaType, data: request.image.data },
     });
   }
-  blocks.push({ type: 'text', text: buildBuddyUserMessage(request.value) });
+  blocks.push({
+    type: 'text',
+    text: buildBuddyUserMessage({ ...request.value, ...(research ? { researchContext: research.context } : {}) }),
+  });
   return blocks;
 }
 
