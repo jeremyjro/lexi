@@ -864,7 +864,14 @@ struct RawCapturePanelView: View {
                 Text("Lexi")
                     .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
-                MarkdownMessageView(markdown: answer)
+                MarkdownTextView(
+                    markdown: answer,
+                    onSelectionChanged: { viewModel.selectedAnswerText = $0 },
+                    onDoubleClick: { text in
+                        viewModel.selectedAnswerText = text
+                        _ = viewModel.requestNestedLookup(term: text)
+                    }
+                )
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 11)
@@ -1213,7 +1220,7 @@ struct RawCapturePanelView: View {
     }
 }
 
-private extension NSTextView {
+extension NSTextView {
     var selectedText: String {
         let range = selectedRange()
         guard range.length > 0, let swiftRange = Range(range, in: string) else { return "" }
