@@ -177,10 +177,12 @@ enum CompositionIntentDetector {
             "is this ", "is that ", "are these ", "are those ", "was this ",
             "define ", "definition of", "meaning of", "what does", "what is",
             "answer this", "answer the", "explain this", "explain the", "explain ",
-            "tell me"
-            // Note: "summarize"/"describe" are leading compose verbs (step 1 wins),
-            // so "summarize what …" intentionally composes a summary rather than
-            // being answered — no unreachable prefixes listed here.
+            "tell me",
+            "describe what", "describe the", "describe this"
+            // Note: "summarize" IS a leading compose verb (step 1 wins) so
+            // "summarize what …" intentionally composes a summary — its prefix is
+            // deliberately not listed here. "describe" is NOT a compose verb, so its
+            // question prefixes stay to keep "describe what this email says" an answer.
         ]
         if answerPrefixes.contains(where: { stripped.hasPrefix($0) }) {
             return true
