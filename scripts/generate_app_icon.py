@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
+"""Generate Lexi's app icon (warm + restrained brand identity).
+
+This renders every required size of the macOS iconset as a PNG using only the
+Python standard library (no Pillow / Cairo needed). The artwork is a rounded
+"squircle" filled with Lexi's single restrained warm gradient (marigold ->
+deeper amber, one hue family) and a white "L + spark" monogram that matches
+`LexiMark` in `Sources/Lexi/DesignSystem/LexiWordmark.swift`.
+
+Regenerating the icon (run on macOS to produce the .icns):
+
+    python3 scripts/generate_app_icon.py          # writes assets/AppIcon.iconset/*.png
+    iconutil -c icns assets/AppIcon.iconset -o assets/Lexi.icns
+
+The PNG step is platform-independent and can be run anywhere with Python 3.9+.
+The `iconutil` step is macOS-only (it is part of the Xcode command line tools).
+"""
+
 import math
-import os
 import struct
 import zlib
 from pathlib import Path
@@ -21,6 +37,14 @@ SPECS = [
     (1024, "icon_512x512@2x.png"),
 ]
 
+# Blended palette (sRGB). Mirrors LexiTheme.swift: warm paper neutrals + a
+# single restrained warm accent. The icon uses one gentle marigold -> deeper
+# amber gradient within a single hue family (no coral / violet).
+MARIGOLD = (0xF2, 0xA0, 0x3D)
+AMBER_DEEP = (0xE0, 0x7F, 0x22)
+INK = (0x1F, 0x1B, 0x16)
+WHITE = (0xFF, 0xFF, 0xFF)
+
 
 def png_chunk(kind: bytes, payload: bytes) -> bytes:
     checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
@@ -40,65 +64,72 @@ def write_png(path: Path, width: int, height: int, pixels: bytes) -> None:
     path.write_bytes(data)
 
 
-def mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+def mix(a, b, t: float):
+    t = max(0.0, min(1.0, t))
     return tuple(round(a[i] * (1 - t) + b[i] * t) for i in range(3))
 
 
-def rounded_rect_alpha(x: float, y: float, size: int, radius: float) -> float:
-    cx = min(max(x, radius), size - radius)
-    cy = min(max(y, radius), size - radius)
-    d = math.hypot(x - cx, y - cy)
-    return max(0.0, min(1.0, radius + 0.8 - d))
+def sdf_round_rect(px, py, cx, cy, hx, hy, r) -> float:
+    """Signed distance to a rounded rectangle (negative inside)."""
+    qx = abs(px - cx) - (hx - r)
+    qy = abs(py - cy) - (hy - r)
+    outside = math.hypot(max(qx, 0.0), max(qy, 0.0))
+    return outside + min(max(qx, qy), 0.0) - r
 
 
-def in_rect(x: int, y: int, left: int, top: int, right: int, bottom: int) -> bool:
-    return left <= x < right and top <= y < bottom
+def coverage(distance: float, aa: float) -> float:
+    """Anti-aliased coverage from a signed distance (negative == inside)."""
+    return max(0.0, min(1.0, 0.5 - distance / aa))
 
 
 def render(size: int) -> bytes:
     pixels = bytearray(size * size * 4)
-    radius = size * 0.22
-    bg_a = (54, 91, 255)
-    bg_b = (155, 79, 255)
-    bg_c = (17, 24, 39)
+    s = float(size)
+    aa = max(1.0, s / 512.0)
 
-    stem_left = round(size * 0.29)
-    stem_right = round(size * 0.43)
-    stem_top = round(size * 0.23)
-    stem_bottom = round(size * 0.75)
-    foot_left = stem_left
-    foot_right = round(size * 0.72)
-    foot_top = round(size * 0.62)
-    foot_bottom = round(size * 0.76)
-    dot_cx = size * 0.67
-    dot_cy = size * 0.32
-    dot_r = size * 0.07
+    bg_radius = 0.225 * s
+    bg_cx = bg_cy = s / 2.0
+    bg_half = s / 2.0
+
+    # "L + spark" monogram geometry (matches LexiMark in Swift).
+    stem_cx, stem_cy, stem_hx, stem_hy = 0.385 * s, 0.50 * s, 0.085 * s, 0.34 * s
+    foot_cx, foot_cy, foot_hx, foot_hy = 0.52 * s, 0.755 * s, 0.22 * s, 0.085 * s
+    glyph_r = 0.05 * s
+    dot_cx, dot_cy, dot_r = 0.70 * s, 0.26 * s, 0.085 * s
 
     for y in range(size):
         for x in range(size):
             idx = (y * size + x) * 4
-            rr = rounded_rect_alpha(x + 0.5, y + 0.5, size, radius)
-            if rr <= 0:
+            px, py = x + 0.5, y + 0.5
+
+            bg_alpha = coverage(sdf_round_rect(px, py, bg_cx, bg_cy, bg_half, bg_half, bg_radius), aa)
+            if bg_alpha <= 0:
                 pixels[idx:idx + 4] = b"\x00\x00\x00\x00"
                 continue
 
-            diagonal = (x + y) / max(1, (size - 1) * 2)
-            vertical = y / max(1, size - 1)
-            base = mix(bg_a, bg_b, diagonal)
-            base = mix(base, bg_c, max(0.0, vertical - 0.50) * 0.55)
+            # Single-hue warm gradient along the main diagonal.
+            t = (px + py) / (2.0 * s)
+            base = mix(MARIGOLD, AMBER_DEEP, t)
 
-            highlight = max(0.0, 1.0 - math.hypot(x - size * 0.22, y - size * 0.17) / (size * 0.65))
-            base = mix(base, (255, 255, 255), highlight * 0.18)
+            # Very gentle deepening toward the bottom for subtle dimensionality.
+            base = mix(base, INK, max(0.0, py / s - 0.60) * 0.18)
 
-            glyph = in_rect(x, y, stem_left, stem_top, stem_right, stem_bottom) or in_rect(x, y, foot_left, foot_top, foot_right, foot_bottom)
-            dot = math.hypot(x - dot_cx, y - dot_cy) <= dot_r
-            if glyph or dot:
-                base = mix(base, (255, 255, 255), 0.92)
+            # Soft warm highlight from the upper-left.
+            highlight = max(0.0, 1.0 - math.hypot(px - 0.24 * s, py - 0.18 * s) / (0.62 * s))
+            base = mix(base, WHITE, highlight * 0.14)
+
+            # White monogram with anti-aliased edges.
+            stem_c = coverage(sdf_round_rect(px, py, stem_cx, stem_cy, stem_hx, stem_hy, glyph_r), aa)
+            foot_c = coverage(sdf_round_rect(px, py, foot_cx, foot_cy, foot_hx, foot_hy, glyph_r), aa)
+            dot_c = coverage(math.hypot(px - dot_cx, py - dot_cy) - dot_r, aa)
+            glyph_alpha = max(stem_c, foot_c, dot_c)
+            if glyph_alpha > 0:
+                base = mix(base, WHITE, 0.96 * glyph_alpha)
 
             pixels[idx] = base[0]
             pixels[idx + 1] = base[1]
             pixels[idx + 2] = base[2]
-            pixels[idx + 3] = round(rr * 255)
+            pixels[idx + 3] = round(bg_alpha * 255)
 
     return bytes(pixels)
 
@@ -108,6 +139,8 @@ def main() -> None:
     for size, filename in SPECS:
         write_png(ICONSET / filename, size, size, render(size))
     print(f"Generated {ICONSET}")
+    print("On macOS, bundle the .icns with:")
+    print("  iconutil -c icns assets/AppIcon.iconset -o assets/Lexi.icns")
 
 
 if __name__ == "__main__":
