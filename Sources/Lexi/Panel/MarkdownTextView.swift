@@ -208,8 +208,12 @@ enum MarkdownBlockParser {
 
     private static func parseHeading(_ line: String) -> (level: Int, text: String)? {
         var hashCount = 0
-        for character in line where character == "#" {
-            hashCount += 1
+        for character in line {
+            if character == "#" {
+                hashCount += 1
+            } else {
+                break
+            }
         }
         guard (1...6).contains(hashCount) else { return nil }
         let remainder = line.dropFirst(hashCount)
