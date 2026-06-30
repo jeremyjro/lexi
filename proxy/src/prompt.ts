@@ -12,7 +12,8 @@ Rules:
 - Do NOT restate or summarize the passage back — the reader can already see it.
 - Do NOT preamble (no "This term refers to…"). Start with the explanation itself.
 - If the passage is empty, give the most likely intended meaning and explicitly note the assumption only when ambiguity matters.
-- If WEB RESEARCH CONTEXT is provided, treat it as source-grounded evidence for exact definitions, names, organizations, products, current facts, niche terms, and ambiguity checks. Prefer it over guessing.
+- If WEB RESEARCH CONTEXT is provided, it is the result of Lexi running its own live web research for this exact request. LEAD with those researched facts: state plainly what the entity/term/company/product actually IS (real name, what it does, who is behind it, current status, concrete numbers or dates), then add the contextual meaning and implications. Treat it as authoritative grounding, weave in the specifics, and cite sources inline when useful.
+- NEVER hedge with phrases like "it seems like you're looking at…", "this appears to be…", or "you may be viewing…" when WEB RESEARCH CONTEXT gives you the answer. Do the research-backed explanation, don't describe the surface.
 - Use RECENT RESEARCH CONTEXT only as lightweight continuity; do not overfit to it.
 - Aim for a useful, skimmable answer around 180–320 words when warranted. Be shorter for simple terms, but avoid shallow one-liners.`;
 
@@ -25,6 +26,7 @@ in context, honoring the same rules above. If there's no question, infer the lik
 behind the point/capture and explain what matters, what to notice, and what the reader may
 be trying to decide. Lead with 1–2 sentences. Explain meaning, don't narrate pixels.
 If no image was provided, answer the spoken question about what the reader is looking at.
+If WEB RESEARCH CONTEXT is present, the reader most likely pointed at a name, company, product, chart, headline, or unfamiliar term — use the researched facts to say what it actually is and the concrete details that matter, NOT a description of the pixels. Never answer with "it seems like you're looking at X" when you have researched facts; do the research itself and lead with the real answer.
 When a visual callout would help, append one final tag in screenshot pixel coordinates: [CALLOUT:x,y:label]. If not useful, append [CALLOUT:none].`;
 
 export type ExplainLineage = {
@@ -82,6 +84,7 @@ export type FollowUpExplainRequest = {
   windowTitle: string;
   appName: string;
   sessionContext?: string;
+  researchContext?: string;
 };
 
 export function buildFollowUpUserMessage(input: FollowUpExplainRequest): string {
@@ -94,10 +97,11 @@ DEPTH: ${input.depth}
 WINDOW TITLE: ${input.windowTitle}
 APP: ${input.appName}
 RECENT RESEARCH CONTEXT: ${input.sessionContext || '(none)'}
+WEB RESEARCH CONTEXT: ${input.researchContext || '(none)'}
 
 READER FOLLOW-UP: ${input.question}
 
-Answer READER FOLLOW-UP using the current answer and original context. Be direct and thoughtful, add the missing nuance, and do not repeat the whole prior explanation.`;
+Answer READER FOLLOW-UP using the current answer and original context. ${input.researchContext ? 'Lead with the WEB RESEARCH CONTEXT facts when they answer the question, and cite the specifics rather than hedging. ' : ''}Be direct and thoughtful, add the missing nuance, and do not repeat the whole prior explanation.`;
 }
 
 export type ComposeRequest = {
@@ -163,6 +167,7 @@ export type BuddyExplainRequest = {
   hasImage: boolean;
   ocrText?: string;
   sessionContext?: string;
+  researchContext?: string;
 };
 
 export function buildBuddyUserMessage(input: BuddyExplainRequest): string {
@@ -180,15 +185,21 @@ export function buildBuddyUserMessage(input: BuddyExplainRequest): string {
   if (input.sessionContext) {
     lines.push(`RECENT RESEARCH CONTEXT:\n${input.sessionContext}`);
   }
+  if (input.researchContext) {
+    lines.push(`WEB RESEARCH CONTEXT:\n${input.researchContext}`);
+  }
 
+  const researchHint = input.researchContext
+    ? ' Lead with the WEB RESEARCH CONTEXT facts — say what this actually is and the concrete details, not a description of the pixels.'
+    : '';
   if (input.hasImage) {
     lines.push(
-      input.question
+      (input.question
         ? '\nAnswer the SPOKEN QUESTION about the attached screenshot region, in context.'
-        : '\nExplain what the attached screenshot region shows and why it matters.',
+        : '\nExplain what the attached screenshot region shows and why it matters.') + researchHint,
     );
   } else {
-    lines.push('\nAnswer the SPOKEN QUESTION about what the reader is currently looking at.');
+    lines.push('\nAnswer the SPOKEN QUESTION about what the reader is currently looking at.' + researchHint);
   }
 
   return lines.join('\n');
