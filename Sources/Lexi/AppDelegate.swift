@@ -614,9 +614,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func requestComposition(instruction: String, context: ActiveTextCompositionContext) {
         explainTask?.cancel()
         cursorBuddy.setActivity(.working)
-        cursorBuddy.showHint("Composing into \(context.appName)…", duration: 2.0)
+
+        // Write-back strategy depends on whether the user highlighted text:
+        // - Selection present  → transform/replace it in ONE shot once the full
+        //   answer arrives (no streaming). Streaming a replacement token-by-token
+        //   into editors like Google Docs duplicates/drops text, fragments undo,
+        //   and races the clipboard restore.
+        // - No selection       → insert new text at the caret, streamed live so the
+        //   user sees it appear as it is generated.
+        let replaceMode = context.hasSelection
         let inserter = StreamingTextInserter()
-        inserter.begin()
+        if replaceMode {
+            cursorBuddy.showHint("Rewriting selection in \(context.appName)…", duration: 2.0)
+        } else {
+            cursorBuddy.showHint("Composing into \(context.appName)…", duration: 2.0)
+            inserter.begin()
+        }
 
         explainTask = Task { [weak self] in
             guard let self else { return }
@@ -631,7 +644,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     onDelta: { [weak self] delta, _ in
                         guard let self else { return }
                         self.cursorBuddy.setActivity(.streaming)
-                        inserter.insert(delta)
+                        if !replaceMode {
+                            inserter.insert(delta)
+                        }
                     },
                     onTiming: { timing in
                         if let proxyTtftMs = timing.proxyTtftMs, let anthropicTtftMs = timing.anthropicTtftMs {
@@ -646,17 +661,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     return
                 }
+
+                if replaceMode {
+                    let replacement = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let didReplace = !replacement.isEmpty
+                        && (await inserter.replaceSelection(with: replacement, allowKeyboardFallback: true))
+                    await MainActor.run {
+                        if didReplace {
+                            self.recordComposition(instruction: instruction, answer: answer, context: context)
+                            self.cursorBuddy.setActivity(.idle)
+                            self.cursorBuddy.showHint("Updated selection", duration: 1.5)
+                            self.rebuildMenu()
+                        } else {
+                            self.cursorBuddy.pulse(.error)
+                            self.cursorBuddy.showHint("Couldn’t update that selection", duration: 2.0)
+                        }
+                    }
+                    return
+                }
+
                 await MainActor.run {
                     inserter.finish()
-                    self.lastAnswer = answer
-                    self.sessionMemory.record(prompt: instruction, answer: answer, source: "Active composition")
-                    LexiInteractionEventStore.shared.record(
-                        prompt: instruction,
-                        answer: answer,
-                        source: "Active composition",
-                        appName: context.appName,
-                        windowTitle: context.windowTitle
-                    )
+                    self.recordComposition(instruction: instruction, answer: answer, context: context)
                     self.cursorBuddy.setActivity(.idle)
                     self.cursorBuddy.showHint("Inserted draft", duration: 1.5)
                     self.rebuildMenu()
@@ -671,6 +697,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    private func recordComposition(instruction: String, answer: String, context: ActiveTextCompositionContext) {
+        lastAnswer = answer
+        sessionMemory.record(prompt: instruction, answer: answer, source: "Active composition")
+        LexiInteractionEventStore.shared.record(
+            prompt: instruction,
+            answer: answer,
+            source: "Active composition",
+            appName: context.appName,
+            windowTitle: context.windowTitle
+        )
     }
 
     private func requestBuddyExplanation(for capture: BuddyCaptureContext) {
