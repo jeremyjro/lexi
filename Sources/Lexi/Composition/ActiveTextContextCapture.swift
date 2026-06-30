@@ -8,6 +8,13 @@ struct ActiveTextCompositionContext {
     let surroundingText: String
     let currentText: String
     let isWritable: Bool
+
+    /// True when the user has highlighted editable text. Drives the write-back
+    /// strategy: a selection means "replace it" (one-shot), no selection means
+    /// "insert at the caret" (stream-friendly).
+    var hasSelection: Bool {
+        !selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 final class ActiveTextContextCapture {
@@ -239,7 +246,24 @@ final class ActiveTextContextCapture {
             "ulysses",
             "ia writer",
             "visual studio code",
-            "cursor"
+            "cursor",
+            "craft",
+            "drafts",
+            "things",
+            "linear",
+            "microsoft word",
+            "word",
+            "pages",
+            "microsoft outlook",
+            "outlook",
+            // Mail & messaging compose surfaces
+            "mail",
+            "spark",
+            "airmail",
+            "messages",
+            "discord",
+            "telegram",
+            "whatsapp"
         ]
         return trustedEditorApps.contains(normalized)
     }

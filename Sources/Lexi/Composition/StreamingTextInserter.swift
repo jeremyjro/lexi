@@ -104,22 +104,41 @@ final class StreamingTextInserter {
     }
 
     private func insertViaAccessibility(_ text: String, requireSelection: Bool) -> Bool {
-        guard let element = focusedTextElement(), !isPasswordField(element), isAttributeSettable(kAXValueAttribute, element) else {
+        guard let element = focusedTextElement(), !isPasswordField(element) else {
             return false
         }
+        let selectedRange = cfRangeAttribute(kAXSelectedTextRangeAttribute, from: element)
+        if requireSelection, !(selectedRange?.length ?? 0 > 0) {
+            // Caller demands a real selection to replace; bail to the paste fallback
+            // rather than silently appending at the caret.
+            return false
+        }
+
+        // Primary path: setting kAXSelectedTextAttribute is the canonical "replace the
+        // current selection (or insert at the caret) with this string" operation. It
+        // preserves the rest of the document and rich-text attributes, and works on
+        // fields whose full kAXValue is read-only or truncated.
+        if isAttributeSettable(kAXSelectedTextAttribute, element) {
+            if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success {
+                return true
+            }
+        }
+
+        // Secondary path: rewrite the whole value around the selected range. Only safe
+        // for plain-text fields whose entire value is settable and readable.
+        guard isAttributeSettable(kAXValueAttribute, element) else { return false }
         let currentValue = stringAttribute(kAXValueAttribute, from: element) ?? ""
-        let selectedRange = cfRangeAttribute(kAXSelectedTextRangeAttribute, from: element) ?? CFRange(location: currentValue.utf16.count, length: 0)
-        guard (!requireSelection || selectedRange.length > 0),
-              selectedRange.location >= 0,
-              selectedRange.length >= 0,
-              selectedRange.location + selectedRange.length <= currentValue.utf16.count else { return false }
-        let nsRange = NSRange(location: selectedRange.location, length: selectedRange.length)
+        let effectiveRange = selectedRange ?? CFRange(location: currentValue.utf16.count, length: 0)
+        guard effectiveRange.location >= 0,
+              effectiveRange.length >= 0,
+              effectiveRange.location + effectiveRange.length <= currentValue.utf16.count else { return false }
+        let nsRange = NSRange(location: effectiveRange.location, length: effectiveRange.length)
         guard let stringRange = Range(nsRange, in: currentValue) else { return false }
         let updatedValue = currentValue.replacingCharacters(in: stringRange, with: text)
         guard AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, updatedValue as CFTypeRef) == .success else {
             return false
         }
-        var newRange = CFRange(location: selectedRange.location + text.utf16.count, length: 0)
+        var newRange = CFRange(location: effectiveRange.location + text.utf16.count, length: 0)
         if let rangeValue = AXValueCreate(.cfRange, &newRange) {
             AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeValue)
         }
@@ -232,7 +251,10 @@ final class StreamingTextInserter {
     }
 
     private func synthesizeKey(_ keyCode: CGKeyCode, flags: CGEventFlags) {
-        let source = CGEventSource(stateID: .combinedSessionState)
+        // Use a private event source so modifier keys the user may still be physically
+        // holding (e.g. the Option/Fn hotkey that triggered Lexi) don't get OR'd into
+        // our synthetic ⌘V and turn it into ⌘⌥V (which won't paste).
+        let source = CGEventSource(stateID: .privateState)
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
         keyDown?.flags = flags
