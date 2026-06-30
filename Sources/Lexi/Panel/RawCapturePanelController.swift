@@ -634,20 +634,22 @@ struct RawCapturePanelView: View {
             }
 
             ScrollView(.vertical, showsIndicators: true) {
-                MarkdownTextView(
-                    markdown: compactAnswer,
-                    bodySize: 15.5,
-                    onSelectionChanged: { viewModel.selectedAnswerText = $0 },
-                    onDoubleClick: { text in
-                        viewModel.selectedAnswerText = text
-                        _ = viewModel.requestNestedLookup(term: text)
-                    }
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 120)
+                VStack(alignment: .leading, spacing: 10) {
+                    MarkdownTextView(
+                        markdown: compactAnswer,
+                        bodySize: 15.5,
+                        onSelectionChanged: { viewModel.selectedAnswerText = $0 },
+                        onDoubleClick: { text in
+                            viewModel.selectedAnswerText = text
+                            _ = viewModel.requestNestedLookup(term: text)
+                        }
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            sourceCitations(for: compactAnswer)
+                    sourceCitations(for: compactAnswer)
+                }
+            }
+            .frame(maxHeight: .infinity)
 
             HStack(spacing: 8) {
                 Button {
@@ -668,7 +670,7 @@ struct RawCapturePanelView: View {
             }
         }
         .padding(16)
-        .frame(width: 372, alignment: .topLeading)
+        .frame(width: 372, height: 236, alignment: .topLeading)
         .background(panelBackground)
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
