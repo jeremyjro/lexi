@@ -1,15 +1,6 @@
 import AppKit
 import SwiftUI
 
-private let panelShadowMargin: CGFloat = 36
-
-private func panelWindowSize(for cardSize: NSSize) -> NSSize {
-    NSSize(
-        width: cardSize.width + panelShadowMargin * 2,
-        height: cardSize.height + panelShadowMargin * 2
-    )
-}
-
 final class RawCapturePanelController {
     var onDismiss: (() -> Void)?
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
@@ -128,6 +119,9 @@ final class RawCapturePanel: NSPanel {
     private let expandedPanelSize = NSSize(width: 448, height: 560)
     private let collapsedPanelSize = NSSize(width: 244, height: 54)
     private let panelInset: CGFloat = 18
+    // Matches the SwiftUI card's RoundedRectangle(cornerRadius: 28). The pill is a
+    // capsule, so its radius is derived from its height (height / 2) at use sites.
+    private let expandedCornerRadius: CGFloat = 28
 
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
         get { viewModel.onNestedLookupRequested }
@@ -143,7 +137,7 @@ final class RawCapturePanel: NSPanel {
 
     init() {
         super.init(
-            contentRect: NSRect(origin: .zero, size: panelWindowSize(for: expandedPanelSize)),
+            contentRect: NSRect(origin: .zero, size: expandedPanelSize),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -154,7 +148,7 @@ final class RawCapturePanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         backgroundColor = .clear
         isOpaque = false
-        hasShadow = false
+        hasShadow = true
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = true
 
@@ -162,6 +156,7 @@ final class RawCapturePanel: NSPanel {
             // No async dispatch — resize starts on the same frame as the SwiftUI animation.
             self?.applyTopRightFrame(animated: animated, expanding: expanding)
         })
+        configureContentViewLayer(cornerRadius: expandedCornerRadius)
     }
 
     var selectedAnswerText: String {
@@ -230,18 +225,15 @@ final class RawCapturePanel: NSPanel {
 
     private func applyTopRightFrame(animated: Bool, expanding: Bool? = nil) {
         let visibleFrame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 900, height: 700)
-        let cardSize = currentPanelSize
-        let cardTopRight = NSPoint(
-            x: visibleFrame.maxX - panelInset,
-            y: visibleFrame.maxY - panelInset
+        let size = currentPanelSize
+        let origin = NSPoint(
+            x: max(visibleFrame.minX + panelInset, visibleFrame.maxX - size.width - panelInset),
+            y: max(visibleFrame.minY + panelInset, visibleFrame.maxY - size.height - panelInset)
         )
-        let windowSize = panelWindowSize(for: cardSize)
-        let windowOrigin = NSPoint(
-            x: max(visibleFrame.minX, cardTopRight.x - cardSize.width - panelShadowMargin),
-            y: max(visibleFrame.minY, cardTopRight.y - cardSize.height - panelShadowMargin)
-        )
-        let targetFrame = NSRect(origin: windowOrigin, size: windowSize)
+        let targetFrame = NSRect(origin: origin, size: size)
+        let targetCornerRadius = viewModel.isPanelExpanded ? expandedCornerRadius : collapsedPanelSize.height / 2
         guard animated else {
+            configureContentViewLayer(cornerRadius: targetCornerRadius)
             setFrame(targetFrame, display: true)
             return
         }
@@ -256,8 +248,17 @@ final class RawCapturePanel: NSPanel {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = spring.settlingDuration
             context.allowsImplicitAnimation = true
+            self.configureContentViewLayer(cornerRadius: targetCornerRadius)
             self.animator().setFrame(targetFrame, display: true)
         }
+    }
+
+    private func configureContentViewLayer(cornerRadius: CGFloat) {
+        guard let contentView else { return }
+        contentView.wantsLayer = true
+        contentView.layer?.cornerCurve = .continuous
+        contentView.layer?.masksToBounds = true
+        contentView.layer?.cornerRadius = cornerRadius
     }
 
     private var liveSelectedText: String {
@@ -483,8 +484,6 @@ struct RawCapturePanelView: View {
             collapseTask?.cancel()
         }
         .animation(reduceMotion ? nil : LexiTheme.Motion.spring, value: viewModel.isPanelExpanded)
-        .padding(panelShadowMargin)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 
     private func handleHover(_ hovering: Bool) {
