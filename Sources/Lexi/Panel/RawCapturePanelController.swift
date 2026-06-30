@@ -26,6 +26,7 @@ final class RawCapturePanelController {
     private let panel: RawCapturePanel
     private var keyMonitor: Any?
     private var localKeyMonitor: Any?
+    private var mouseMonitor: Any?
 
     init() {
         panel = RawCapturePanel()
@@ -38,6 +39,9 @@ final class RawCapturePanelController {
         }
         if let localKeyMonitor {
             NSEvent.removeMonitor(localKeyMonitor)
+        }
+        if let mouseMonitor {
+            NSEvent.removeMonitor(mouseMonitor)
         }
     }
 
@@ -88,6 +92,7 @@ final class RawCapturePanelController {
     func hide() {
         guard panel.isVisible else { return }
         panel.orderOut(nil)
+        panel.clearPresentationAnchor()
         onDismiss?()
     }
 
@@ -99,6 +104,13 @@ final class RawCapturePanelController {
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
             return self.handleKeyDown(event) ? nil : event
+        }
+
+        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            guard let self, self.panel.isVisible, self.panel.isAnchoredHighlightPopover else { return }
+            let mouseLocation = NSEvent.mouseLocation
+            guard !self.panel.frame.contains(mouseLocation) else { return }
+            self.hide()
         }
     }
 
@@ -127,7 +139,9 @@ final class RawCapturePanel: NSPanel {
     private let viewModel = RawCapturePanelViewModel()
     private let expandedPanelSize = NSSize(width: 448, height: 560)
     private let collapsedPanelSize = NSSize(width: 244, height: 54)
+    private let anchoredPopoverSize = NSSize(width: 372, height: 236)
     private let panelInset: CGFloat = 18
+    private var anchorRect: CGRect?
 
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)? {
         get { viewModel.onNestedLookupRequested }
@@ -160,7 +174,7 @@ final class RawCapturePanel: NSPanel {
 
         contentView = NSHostingView(rootView: RawCapturePanelView(viewModel: viewModel) { [weak self] animated, expanding in
             // No async dispatch — resize starts on the same frame as the SwiftUI animation.
-            self?.applyTopRightFrame(animated: animated, expanding: expanding)
+            self?.applyFrame(animated: animated, expanding: expanding)
         })
     }
 
@@ -177,11 +191,21 @@ final class RawCapturePanel: NSPanel {
         viewModel.currentLookupStack
     }
 
+    var isAnchoredHighlightPopover: Bool {
+        guard panel.isVisible else { return false }
+        return panel.isAnchoredHighlightPopover
+    }
+
+    func clearPresentationAnchor() {
+        anchorRect = nil
+        viewModel.anchorRect = nil
+    }
+
     func update(status: RawCapturePanelStatus, resetExpansion: Bool = false) {
         let wasExpanded = viewModel.isPanelExpanded
         viewModel.update(status: status, resetExpansion: resetExpansion)
         if isVisible, wasExpanded != viewModel.isPanelExpanded {
-            applyTopRightFrame(animated: true, expanding: viewModel.isPanelExpanded)
+            applyFrame(animated: true, expanding: viewModel.isPanelExpanded)
         }
     }
 
@@ -221,25 +245,59 @@ final class RawCapturePanel: NSPanel {
     }
 
     func position(anchorRect: CGRect?) {
-        applyTopRightFrame(animated: false)
+        self.anchorRect = anchorRect
+        viewModel.anchorRect = anchorRect
+        applyFrame(animated: false)
     }
 
     private var currentPanelSize: NSSize {
+        if isAnchoredHighlightPopover {
+            return anchoredPopoverSize
+        }
         viewModel.isPanelExpanded ? expandedPanelSize : collapsedPanelSize
     }
 
-    private func applyTopRightFrame(animated: Bool, expanding: Bool? = nil) {
+    private var isAnchoredHighlightPopover: Bool {
+        guard anchorRect != nil,
+              case .lookup(let stack) = viewModel.status,
+              stack.depth == 0,
+              !viewModel.isPanelExpanded else { return false }
+        return true
+    }
+
+    private func applyFrame(animated: Bool, expanding: Bool? = nil) {
         let visibleFrame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 900, height: 700)
         let cardSize = currentPanelSize
-        let cardTopRight = NSPoint(
-            x: visibleFrame.maxX - panelInset,
-            y: visibleFrame.maxY - panelInset
-        )
         let windowSize = panelWindowSize(for: cardSize)
-        let windowOrigin = NSPoint(
-            x: max(visibleFrame.minX, cardTopRight.x - cardSize.width - panelShadowMargin),
-            y: max(visibleFrame.minY, cardTopRight.y - cardSize.height - panelShadowMargin)
-        )
+        let windowOrigin: NSPoint
+        if isAnchoredHighlightPopover, let anchorRect = anchorRect {
+            let anchorScreen = screen(containing: anchorRect) ?? NSScreen.main ?? NSScreen.screens.first
+            let visible = anchorScreen?.visibleFrame ?? visibleFrame
+            let anchorPoint = anchorRect.midX.isFinite ? NSPoint(x: anchorRect.midX, y: anchorRect.minY) : NSPoint(x: visible.midX, y: visible.midY)
+            let belowOrigin = NSPoint(
+                x: min(max(visible.minX, anchorPoint.x - cardSize.width / 2 - panelShadowMargin), visible.maxX - windowSize.width),
+                y: min(max(visible.minY, anchorPoint.y - cardSize.height - 16 - panelShadowMargin), visible.maxY - windowSize.height)
+            )
+            let aboveOrigin = NSPoint(
+                x: min(max(visible.minX, anchorPoint.x - cardSize.width / 2 - panelShadowMargin), visible.maxX - windowSize.width),
+                y: min(max(visible.minY, anchorRect.maxY + 16 - panelShadowMargin), visible.maxY - windowSize.height)
+            )
+            let fitsAbove = aboveOrigin.y + windowSize.height <= visible.maxY
+            let fitsBelow = belowOrigin.y >= visible.minY
+            let shouldShowBelow = fitsBelow && (!fitsAbove || abs(anchorPoint.y - visible.minY) < abs(visible.maxY - anchorPoint.y))
+            windowOrigin = shouldShowBelow ? belowOrigin : aboveOrigin
+            viewModel.anchorArrowAtTop = shouldShowBelow
+        } else {
+            viewModel.anchorArrowAtTop = false
+            let cardTopRight = NSPoint(
+                x: visibleFrame.maxX - panelInset,
+                y: visibleFrame.maxY - panelInset
+            )
+            windowOrigin = NSPoint(
+                x: max(visibleFrame.minX, cardTopRight.x - cardSize.width - panelShadowMargin),
+                y: max(visibleFrame.minY, cardTopRight.y - cardSize.height - panelShadowMargin)
+            )
+        }
         let targetFrame = NSRect(origin: windowOrigin, size: windowSize)
         guard animated else {
             setFrame(targetFrame, display: true)
@@ -330,6 +388,8 @@ final class RawCapturePanelViewModel: ObservableObject {
     @Published var selectedAnswerText = ""
     @Published var followUpQuestion = ""
     @Published var isExpanded = true
+    @Published var anchorRect: CGRect?
+    @Published var anchorArrowAtTop = true
     var onNestedLookupRequested: ((String, LookupNavigationStack) -> Void)?
     var onFollowUpRequested: ((String, LookupNavigationStack) -> Void)?
 
@@ -458,7 +518,13 @@ struct RawCapturePanelView: View {
 
     var body: some View {
         Group {
-            if viewModel.isPanelExpanded {
+            if isAnchoredHighlightPopover && !viewModel.isPanelExpanded {
+                compactHighlightPopover
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)),
+                        removal:   .opacity.combined(with: .scale(scale: 0.97, anchor: .bottom))
+                    ))
+            } else if viewModel.isPanelExpanded {
                 expandedPanel
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)),
@@ -472,7 +538,7 @@ struct RawCapturePanelView: View {
                     ))
             }
         }
-        .contentShape(RoundedRectangle(cornerRadius: viewModel.isPanelExpanded ? 28 : 27, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: (viewModel.isPanelExpanded || isAnchoredHighlightPopover) ? 28 : 27, style: .continuous))
         .onHover { hovering in
             handleHover(hovering)
         }
@@ -485,6 +551,13 @@ struct RawCapturePanelView: View {
         .animation(reduceMotion ? nil : LexiTheme.Motion.spring, value: viewModel.isPanelExpanded)
         .padding(panelShadowMargin)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+    }
+
+    private var isAnchoredHighlightPopover: Bool {
+        guard let anchorRect = viewModel.anchorRect,
+              case .lookup(let stack) = viewModel.status,
+              stack.depth == 0 else { return false }
+        return anchorRect.width > 0 && anchorRect.height > 0
     }
 
     private func handleHover(_ hovering: Bool) {
@@ -535,6 +608,91 @@ struct RawCapturePanelView: View {
         )
         .shadow(color: .black.opacity(0.20), radius: 28, x: 0, y: 18)
         .shadow(color: .white.opacity(0.20), radius: 1, x: 0, y: 1)
+    }
+
+    private var compactHighlightPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Text("Answered")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text("Esc")
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.08), in: Capsule())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 6) {
+                Text("You")
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Text(compactPrompt)
+                    .font(.system(size: 13.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+            }
+
+            MarkdownTextView(
+                markdown: compactAnswer,
+                bodySize: 15.5,
+                onSelectionChanged: { viewModel.selectedAnswerText = $0 },
+                onDoubleClick: { text in
+                    viewModel.selectedAnswerText = text
+                    _ = viewModel.requestNestedLookup(term: text)
+                }
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            sourceCitations(for: compactAnswer)
+
+            HStack(spacing: 8) {
+                Button {
+                    viewModel.setExpanded(true)
+                } label: {
+                    Label("✦ Go deeper", systemImage: "sparkles")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button("Copy") {
+                    copyToPasteboard(compactAnswer)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(16)
+        .frame(width: 372, alignment: .topLeading)
+        .background(panelBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.44), Color.white.opacity(0.10), Color.black.opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .overlay(alignment: viewModel.anchorArrowAtTop ? .topLeading : .bottomLeading) {
+            Image(systemName: "triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.lexiPaperElevated)
+                .shadow(color: .black.opacity(0.14), radius: 2, x: 0, y: 1)
+                .rotationEffect(.degrees(viewModel.anchorArrowAtTop ? 0 : 180))
+                .offset(x: 28, y: viewModel.anchorArrowAtTop ? -6 : 6)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 22, x: 0, y: 14)
+        .shadow(color: .white.opacity(0.18), radius: 1, x: 0, y: 1)
     }
 
     private var collapsedPill: some View {
@@ -595,16 +753,10 @@ struct RawCapturePanelView: View {
 
     private var collapsedPillTitle: String {
         switch viewModel.status {
-        case .loading:
+        case .loading, .streaming, .buddyLoading, .buddyStreaming:
             return "Thinking…"
-        case .streaming:
-            return "Writing…"
-        case .buddyLoading:
-            return "Reading screen"
-        case .buddyStreaming:
-            return "Writing…"
         case .answered, .lookup:
-            return "Answer ready"
+            return "Answered"
         default:
             return "Lexi"
         }
@@ -869,12 +1021,14 @@ struct RawCapturePanelView: View {
                     .foregroundStyle(.secondary)
                 MarkdownTextView(
                     markdown: answer,
+                    bodySize: 15.5,
                     onSelectionChanged: { viewModel.selectedAnswerText = $0 },
                     onDoubleClick: { text in
                         viewModel.selectedAnswerText = text
                         _ = viewModel.requestNestedLookup(term: text)
                     }
                 )
+                sourceCitations(for: answer)
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 11)
@@ -903,15 +1057,10 @@ struct RawCapturePanelView: View {
     private func lookupHeader(_ stack: LookupNavigationStack) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             breadcrumb(stack)
-            if let node = stack.currentNode {
-                Text(node.term)
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
-                    .lineLimit(2)
-                if stack.depth > 0 {
-                    Text(node.sourceLabel == "Follow-up" ? "Follow-up" : "From your answer")
-                        .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                }
+            if stack.depth > 0, let node = stack.currentNode {
+                Text(node.sourceLabel == "Follow-up" ? "Follow-up" : "From your answer")
+                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -1054,9 +1203,9 @@ struct RawCapturePanelView: View {
         case .answered:
             return "Answer ready · Copy Last Answer from menu"
         case .lookup(let stack):
-            return stack.depth == 0 ? "Highlight inside answer, then press → to drill" : "← pops up · → drills down or reopens child"
+            return stack.depth == 0 ? "Select any line, then → to dig deeper" : "← pops up · → drills down or reopens child"
         case .streaming, .buddyStreaming:
-            return "Writing your answer…"
+            return "Thinking…"
         case .buddyMessage:
             return "Drag a region or press Esc to cancel"
         case .loading, .buddyLoading:
@@ -1089,16 +1238,12 @@ struct RawCapturePanelView: View {
         switch viewModel.status {
         case .captured:
             return "Reading"
-        case .loading, .buddyLoading:
-            return "Thinking"
+        case .loading, .buddyLoading, .streaming, .buddyStreaming:
+            return "Thinking…"
         case .buddyMessage:
             return "Buddy"
-        case .streaming, .buddyStreaming:
-            return "Writing"
-        case .answered:
-            return "Ready"
-        case .lookup(let stack):
-            return stack.depth == 0 ? "Ready" : "Exploring"
+        case .answered, .lookup:
+            return "Answered"
         case .buddyError, .buddyPermissionMissing, .error:
             return "Needs attention"
         case .noSelection:
@@ -1220,6 +1365,85 @@ struct RawCapturePanelView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > limit else { return trimmed }
         return String(trimmed.prefix(limit)) + "…"
+    }
+
+    private var compactPrompt: String {
+        switch viewModel.status {
+        case .lookup(let stack):
+            return stack.currentNode?.term ?? "Lexi"
+        case .answered(let capture, _), .streaming(let capture, _):
+            return chatPrompt(for: capture)
+        default:
+            return "Lexi"
+        }
+    }
+
+    private var compactAnswer: String {
+        switch viewModel.status {
+        case .lookup(let stack):
+            return stack.currentNode?.answer ?? ""
+        case .answered(_, let answer), .streaming(_, let answer):
+            return answer
+        default:
+            return ""
+        }
+    }
+
+    @ViewBuilder
+    private func sourceCitations(for answer: String) -> some View {
+        let sources = sourceURLs(from: answer)
+        if !sources.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Sources")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(sources.enumerated()), id: \.offset) { index, url in
+                        Button {
+                            NSWorkspace.shared.open(url)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(verbatim: "\(index + 1)")
+                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.lexiAccent)
+                                    .frame(width: 14, height: 14)
+                                    .background(Color.lexiAccent.opacity(0.12), in: Capsule())
+                                Text(sourceLabel(for: url))
+                                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func sourceURLs(from answer: String) -> [URL] {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return [] }
+        let range = NSRange(answer.startIndex..., in: answer)
+        var urls: [URL] = []
+        detector.enumerateMatches(in: answer, options: [], range: range) { match, _, _ in
+            guard let url = match?.url, !urls.contains(url) else { return }
+            urls.append(url)
+        }
+        return urls
+    }
+
+    private func sourceLabel(for url: URL) -> String {
+        if let host = url.host, !host.isEmpty {
+            return host.replacingOccurrences(of: "www.", with: "")
+        }
+        return url.absoluteString
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 

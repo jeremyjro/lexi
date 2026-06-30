@@ -471,7 +471,7 @@ enum MarkdownAttributedStringBuilder {
 
     private static func bodyFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
         let base = NSFont.systemFont(ofSize: size, weight: weight)
-        guard let descriptor = base.fontDescriptor.withDesign(.rounded),
+        guard let descriptor = base.fontDescriptor.withDesign(.serif),
               let font = NSFont(descriptor: descriptor, size: size) else {
             return base
         }
