@@ -4,8 +4,10 @@ import AppKit
 /// Lexi's brand & design-system foundation.
 ///
 /// `LexiTheme` is the single source of truth for Lexi's visual identity —
-/// the **Aurora** direction: warm "paper" surfaces, ink-dark text, and a
-/// signature marigold→coral *spark* accent with a soft violet glow.
+/// a **warm + restrained** direction: warm "paper" surfaces, ink-dark text,
+/// and a single restrained warm (marigold/amber) accent. Warmth from the
+/// neutrals and serif voice; restraint from one accent, generous whitespace
+/// and subtle depth.
 ///
 /// Everything here is additive. The semantic status colors used elsewhere in
 /// the app (system green / blue / orange / purple) keep working unchanged —
@@ -117,13 +119,10 @@ public extension Color {
     /// ``Color/lexiAccent`` for accent-colored labels on light & dark paper.
     static let lexiAccentText = Color.lexiDynamic(light: 0xB5650C, dark: 0xFFC988)
 
-    /// Secondary brand accent — coral. Used as the warm end of brand gradients
-    /// (icon, hero glows) and for playful highlights.
-    static let lexiCoral = Color.lexiDynamic(light: 0xFF6B6B, dark: 0xFF7E7E)
-
-    /// Tertiary brand hue — a soft violet glow that grounds the warm accents
-    /// and ties back to Lexi's "magical" feel. Mostly used in gradients.
-    static let lexiViolet = Color.lexiDynamic(light: 0x7C5CFF, dark: 0x9B82FF)
+    /// A deeper amber, used only as the far end of the subtle single-hue warm
+    /// gradient on the app icon / brand mark. It is **not** a second brand
+    /// color — Lexi deliberately ships one restrained warm accent.
+    static let lexiAccentDeep = Color.lexiDynamic(light: 0xE07F22, dark: 0xE89A45)
 
     // -- Surfaces (warm "paper") --------------------------------------------
 
@@ -161,17 +160,12 @@ public extension Color {
 
 public extension LinearGradient {
 
-    /// The signature Aurora gradient (marigold → coral → violet glow). Used by
-    /// the app icon, hero washes and the brand mark badge.
-    static let lexiAurora = LinearGradient(
-        colors: [.lexiAccent, .lexiCoral, .lexiViolet],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
-
-    /// A subtler two-stop warm gradient for buttons and small accents.
+    /// Lexi's single, restrained warm gradient — a gentle marigold → deeper
+    /// amber within one hue family. Reserved for the app icon and brand mark.
+    /// In UI chrome, prefer the **solid** ``Color/lexiAccent`` over a gradient
+    /// to keep surfaces calm.
     static let lexiWarm = LinearGradient(
-        colors: [.lexiAccent, .lexiCoral],
+        colors: [.lexiAccent, .lexiAccentDeep],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
@@ -181,10 +175,11 @@ public extension LinearGradient {
 
 public extension Font {
 
-    /// Lexi's display face — SF Serif, bold. This is the brand voice: warm,
-    /// literary, human. Reserve it for the wordmark and large hero titles.
-    static func lexiDisplay(_ size: CGFloat = 28) -> Font {
-        .system(size: size, weight: .bold, design: .serif)
+    /// Lexi's display face — SF Serif. This is the brand voice: warm, literary,
+    /// human, but set at a calm `.semibold` weight for a refined (not
+    /// decorative) feel. Reserve it for the wordmark and large hero titles.
+    static func lexiDisplay(_ size: CGFloat = 28, weight: Font.Weight = .semibold) -> Font {
+        .system(size: size, weight: weight, design: .serif)
     }
 
     /// Largest UI title (rounded SF) — header titles.
@@ -253,18 +248,20 @@ public extension View {
         self.tint(.lexiAccent)
     }
 
-    /// Adds the signature warm Aurora glow behind a view — used sparingly for
-    /// the brand mark and key focal points.
-    func lexiGlow(radius: CGFloat = 18, opacity: Double = 0.35) -> some View {
+    /// Adds a *restrained* warm halo behind a view. Kept intentionally subtle
+    /// (low radius/opacity) — reserve for the brand mark and the single key
+    /// focal point on a surface, never for everyday chrome.
+    func lexiGlow(radius: CGFloat = 10, opacity: Double = 0.18) -> some View {
         self.shadow(color: Color.lexiAccent.opacity(opacity), radius: radius, x: 0, y: 0)
     }
 }
 
 // MARK: - Primary button style
 
-/// Lexi's primary call-to-action button — a warm pill with the Aurora gradient
-/// and a gentle press spring. Use for the single most important action on a
-/// surface (e.g. "Ask", "Start Buddy Capture", "Get Started").
+/// Lexi's primary call-to-action button — a calm warm pill with a **solid**
+/// accent fill (no gradient) and a gentle press spring. Use for the single
+/// most important action on a surface (e.g. "Ask", "Start Buddy Capture",
+/// "Get Started").
 public struct LexiPrimaryButtonStyle: ButtonStyle {
     public init() {}
 
@@ -274,9 +271,9 @@ public struct LexiPrimaryButtonStyle: ButtonStyle {
             .foregroundStyle(.white)
             .padding(.horizontal, LexiTheme.Spacing.lg)
             .padding(.vertical, LexiTheme.Spacing.sm)
-            .background(LinearGradient.lexiWarm, in: Capsule(style: .continuous))
-            .lexiGlow(radius: 14, opacity: configuration.isPressed ? 0.20 : 0.40)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .background(Color.lexiAccent, in: Capsule(style: .continuous))
+            .opacity(configuration.isPressed ? 0.88 : 1)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .animation(LexiTheme.Motion.quick, value: configuration.isPressed)
     }
 }

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Generate Lexi's app icon (the "Aurora" brand identity).
+"""Generate Lexi's app icon (warm + restrained brand identity).
 
 This renders every required size of the macOS iconset as a PNG using only the
 Python standard library (no Pillow / Cairo needed). The artwork is a rounded
-"squircle" filled with Lexi's signature Aurora gradient (marigold -> coral ->
-violet) and a white "L + spark" monogram that matches `LexiMark` in
-`Sources/Lexi/DesignSystem/LexiWordmark.swift`.
+"squircle" filled with Lexi's single restrained warm gradient (marigold ->
+deeper amber, one hue family) and a white "L + spark" monogram that matches
+`LexiMark` in `Sources/Lexi/DesignSystem/LexiWordmark.swift`.
 
 Regenerating the icon (run on macOS to produce the .icns):
 
@@ -37,10 +37,11 @@ SPECS = [
     (1024, "icon_512x512@2x.png"),
 ]
 
-# Aurora palette (sRGB). Mirrors LexiTheme.swift.
+# Blended palette (sRGB). Mirrors LexiTheme.swift: warm paper neutrals + a
+# single restrained warm accent. The icon uses one gentle marigold -> deeper
+# amber gradient within a single hue family (no coral / violet).
 MARIGOLD = (0xF2, 0xA0, 0x3D)
-CORAL = (0xFF, 0x6B, 0x6B)
-VIOLET = (0x7C, 0x5C, 0xFF)
+AMBER_DEEP = (0xE0, 0x7F, 0x22)
 INK = (0x1F, 0x1B, 0x16)
 WHITE = (0xFF, 0xFF, 0xFF)
 
@@ -106,19 +107,16 @@ def render(size: int) -> bytes:
                 pixels[idx:idx + 4] = b"\x00\x00\x00\x00"
                 continue
 
-            # Aurora gradient along the main diagonal: marigold -> coral -> violet.
+            # Single-hue warm gradient along the main diagonal.
             t = (px + py) / (2.0 * s)
-            if t < 0.5:
-                base = mix(MARIGOLD, CORAL, t * 2.0)
-            else:
-                base = mix(CORAL, VIOLET, (t - 0.5) * 2.0)
+            base = mix(MARIGOLD, AMBER_DEEP, t)
 
-            # Gentle deepening toward the bottom for dimensionality.
-            base = mix(base, INK, max(0.0, py / s - 0.55) * 0.30)
+            # Very gentle deepening toward the bottom for subtle dimensionality.
+            base = mix(base, INK, max(0.0, py / s - 0.60) * 0.18)
 
             # Soft warm highlight from the upper-left.
             highlight = max(0.0, 1.0 - math.hypot(px - 0.24 * s, py - 0.18 * s) / (0.62 * s))
-            base = mix(base, WHITE, highlight * 0.20)
+            base = mix(base, WHITE, highlight * 0.14)
 
             # White monogram with anti-aliased edges.
             stem_c = coverage(sdf_round_rect(px, py, stem_cx, stem_cy, stem_hx, stem_hy, glyph_r), aa)

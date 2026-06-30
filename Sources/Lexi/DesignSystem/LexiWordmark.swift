@@ -61,8 +61,9 @@ public struct LexiBrandMark: View {
 
     /// - Parameters:
     ///   - size: The square edge length in points.
-    ///   - glow: Whether to render the signature warm glow behind the badge.
-    public init(size: CGFloat = 44, glow: Bool = true) {
+    ///   - glow: Whether to render a subtle warm halo behind the badge. Off by
+    ///     default to keep surfaces calm; enable only for a hero focal point.
+    public init(size: CGFloat = 44, glow: Bool = false) {
         self.size = size
         self.glow = glow
     }
@@ -70,7 +71,7 @@ public struct LexiBrandMark: View {
     public var body: some View {
         let corner = size * 0.225
         RoundedRectangle(cornerRadius: corner, style: .continuous)
-            .fill(LinearGradient.lexiAurora)
+            .fill(LinearGradient.lexiWarm)
             .overlay(
                 LexiMark()
                     .fill(.white)
@@ -81,7 +82,7 @@ public struct LexiBrandMark: View {
                     .strokeBorder(.white.opacity(0.18), lineWidth: max(0.5, size * 0.01))
             )
             .frame(width: size, height: size)
-            .modifier(ConditionalGlow(enabled: glow, radius: size * 0.32))
+            .modifier(ConditionalGlow(enabled: glow, radius: size * 0.22))
             .accessibilityLabel("Lexi")
     }
 }
@@ -92,7 +93,7 @@ private struct ConditionalGlow: ViewModifier {
 
     func body(content: Content) -> some View {
         if enabled {
-            content.lexiGlow(radius: radius, opacity: 0.35)
+            content.lexiGlow(radius: radius, opacity: 0.18)
         } else {
             content
         }
@@ -118,9 +119,10 @@ public struct LexiMonogram: View {
     }
 }
 
-/// The Lexi wordmark — "Lexi" set in the brand serif face with a warm marigold
-/// *spark* over it. Optionally pairs with the gradient badge for a full
-/// lockup.
+/// The Lexi wordmark — "Lexi" set in the brand serif face at a calm, refined
+/// weight. No decorative flourishes; the warmth comes from the serif itself.
+/// Optionally pairs with the brand-mark badge for a full lockup, where the
+/// badge carries the single accent touch.
 ///
 /// Use the wordmark in product headers (Settings, onboarding) and the About
 /// surface. Keep it on a calm paper background; never place it over busy
@@ -128,9 +130,9 @@ public struct LexiMonogram: View {
 public struct LexiWordmark: View {
     /// How the wordmark is laid out.
     public enum Layout {
-        /// Just the "Lexi" wordmark (with spark).
+        /// Just the "Lexi" serif wordmark.
         case wordmarkOnly
-        /// The gradient badge followed by the "Lexi" wordmark.
+        /// The brand-mark badge followed by the "Lexi" wordmark.
         case badgeAndWordmark
     }
 
@@ -140,16 +142,16 @@ public struct LexiWordmark: View {
     /// - Parameters:
     ///   - size: The cap height of the wordmark in points (the badge is scaled
     ///     to match).
-    ///   - layout: Whether to show the leading gradient badge.
+    ///   - layout: Whether to show the leading brand-mark badge.
     public init(size: CGFloat = 28, layout: Layout = .wordmarkOnly) {
         self.size = size
         self.layout = layout
     }
 
     public var body: some View {
-        HStack(spacing: size * 0.42) {
+        HStack(spacing: size * 0.46) {
             if layout == .badgeAndWordmark {
-                LexiBrandMark(size: size * 1.55, glow: false)
+                LexiBrandMark(size: size * 1.5, glow: false)
             }
             wordmark
         }
@@ -161,12 +163,6 @@ public struct LexiWordmark: View {
         Text("Lexi")
             .font(.lexiDisplay(size))
             .foregroundStyle(Color.lexiInk)
-            .overlay(alignment: .topTrailing) {
-                Circle()
-                    .fill(Color.lexiAccent)
-                    .frame(width: size * 0.16, height: size * 0.16)
-                    .offset(x: size * 0.02, y: -size * 0.06)
-            }
             .fixedSize()
     }
 }
