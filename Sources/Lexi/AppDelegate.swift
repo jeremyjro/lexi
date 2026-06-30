@@ -1,10 +1,13 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import SwiftUI
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let firstRunDefaultsKey = "LexiHasCompletedFirstRun"
     private var statusItem: NSStatusItem?
+    private let homePopover = NSPopover()
     private let hotkeyManager = HotkeyManager()
     private let selectionCapture = SelectionCapture()
     private let rawCapturePanel = RawCapturePanelController()
@@ -17,12 +20,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let cursorBuddy = BuddyCursorFollowerController()
     private var buddyCoordinator: BuddyCaptureCoordinator?
     private var settingsWindow: SettingsWindowController?
+    private var welcomeWindow: WelcomeWindowController?
+    private var homeWindow: NSWindow?
     private var explainTask: Task<Void, Never>?
     private var lastAnswer: String?
     private var isLookupHotkeyHeld = false
     private var lookupHotkeyStartedAt: Double = 0
     private var isHighlightVoiceCaptureArmed = false
     private var isEnabled = true
+    private var hasCompletedFirstRun: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.firstRunDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.firstRunDefaultsKey) }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -50,26 +59,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         setupGlobalHotkey()
-        showSettings()
+        presentFirstRunIfNeeded()
         print("Lexi started successfully")
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showSettings()
+        showHomePopover(forceShow: true)
         return true
     }
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "Lexi"
-        item.button?.image = NSImage(systemSymbolName: "textformat", accessibilityDescription: "Lexi")
+        // BRAND: Swap this temporary sparkles glyph for the real app mark/wordmark.
+        item.button?.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Lexi")
         item.button?.imagePosition = .imageLeading
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
         rebuildMenu()
     }
 
-    private func rebuildMenu() {
+    @discardableResult
+    private func rebuildMenu() -> NSMenu {
+        buildMenu()
+    }
+
+    private func buildMenu() -> NSMenu {
         let menu = NSMenu()
+
+        let welcomeItem = NSMenuItem(title: "Welcome to Lexi…", action: #selector(showWelcome), keyEquivalent: "")
+        welcomeItem.target = self
+        menu.addItem(welcomeItem)
+
+        menu.addItem(.separator())
 
         let enableItem = NSMenuItem(title: isEnabled ? "Disable" : "Enable", action: #selector(toggleEnabled), keyEquivalent: "")
         enableItem.target = self
@@ -107,12 +131,117 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
 
-        statusItem?.menu = menu
+        return menu
     }
 
     private func requestAccessibilityPermission() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
+    }
+
+    private func presentFirstRunIfNeeded() {
+        guard !hasCompletedFirstRun else { return }
+        showWelcome()
+    }
+
+    @objc private func showWelcome() {
+        if welcomeWindow == nil {
+            welcomeWindow = WelcomeWindowController { [weak self] in
+                self?.hasCompletedFirstRun = true
+                self?.welcomeWindow = nil
+            }
+        }
+        welcomeWindow?.showWindow(nil)
+        welcomeWindow?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showHomePopover(forceShow: Bool = false) {
+        guard let button = statusItem?.button else {
+            showHomeWindow()
+            return
+        }
+
+        homePopover.behavior = .transient
+        homePopover.contentViewController = makeHomeContentController()
+        homePopover.contentSize = NSSize(width: 320, height: 420)
+
+        if homePopover.isShown {
+            if forceShow {
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                homePopover.close()
+            }
+            return
+        }
+
+        homePopover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showHomeWindow() {
+        if homeWindow == nil {
+            homeWindow = makeHomeWindow()
+        }
+        homeWindow?.contentViewController = makeHomeContentController()
+        homeWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func makeHomeContentController() -> NSHostingController<HomeView> {
+        NSHostingController(
+            rootView: HomeView(
+                isEnabled: isEnabled,
+                onStartBuddy: { [weak self] in
+                    self?.startBuddyCapture()
+                },
+                onToggleEnabled: { [weak self] in
+                    self?.toggleEnabled()
+                },
+                onShowWelcome: { [weak self] in
+                    self?.showWelcome()
+                },
+                onOpenSettings: { [weak self] in
+                    self?.showSettings()
+                },
+                onQuit: { [weak self] in
+                    self?.quitLexi()
+                }
+            )
+        )
+    }
+
+    private func makeHomeWindow() -> NSWindow {
+        let window = NSWindow(contentViewController: makeHomeContentController())
+        window.title = "Lexi"
+        window.styleMask = [.titled, .closable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.setContentSize(NSSize(width: 320, height: 420))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = NSColor(
+            calibratedRed: 0.99,
+            green: 0.95,
+            blue: 0.91,
+            alpha: 1.0
+        )
+        return window
+    }
+
+    @objc private func statusItemClicked(_ sender: Any?) {
+        guard let button = statusItem?.button else { return }
+        let event = NSApp.currentEvent
+        let isSecondaryClick = event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true
+
+        if isSecondaryClick {
+            statusItem?.menu = buildMenu()
+            button.performClick(nil)
+            statusItem?.menu = nil
+        } else {
+            showHomePopover()
+        }
     }
 
     @objc private func toggleEnabled() {
@@ -130,6 +259,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             cursorBuddy.start()
             cursorBuddy.setActivity(.idle)
+        }
+        if homePopover.isShown {
+            homePopover.contentViewController = makeHomeContentController()
+        }
+        if homeWindow != nil {
+            homeWindow?.contentViewController = makeHomeContentController()
         }
         rebuildMenu()
     }
