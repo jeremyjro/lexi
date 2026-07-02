@@ -456,6 +456,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let captureMs = Int(currentMilliseconds() - captureStartedAt)
             print("Capture success: term='\(captureWithQuestion.term)', passageLength=\(captureWithQuestion.passage.count), app='\(captureWithQuestion.appName)', source=\(captureWithQuestion.source), capture=\(captureMs)ms")
             if CompositionIntentDetector.isWholeDeletionInstruction(spokenQuestion) {
+                print("Lexi hotkey branch: deletion with selection")
                 if let compositionContext = activeTextContextCapture.capture(selectedText: captureWithQuestion.term, surroundingText: captureWithQuestion.passage),
                    compositionContext.isWritable {
                     requestDeletion(instruction: spokenQuestion, context: compositionContext)
@@ -466,6 +467,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             if CompositionIntentDetector.isCompositionInstruction(spokenQuestion) {
+                print("Lexi hotkey branch: compose with selection")
                 if let compositionContext = activeTextContextCapture.capture(selectedText: captureWithQuestion.term, surroundingText: captureWithQuestion.passage),
                    compositionContext.isWritable {
                     requestComposition(instruction: spokenQuestion, context: compositionContext)
@@ -488,6 +490,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             if CompositionIntentDetector.isWholeDeletionInstruction(trimmedQuestion) {
+                print("Lexi hotkey branch: deletion without selection")
                 if let compositionContext = activeTextContextCapture.capture(),
                    compositionContext.isWritable,
                    !compositionContext.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -497,6 +500,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     cursorBuddy.showHint("Select text to delete", duration: 2.0)
                 }
             } else if CompositionIntentDetector.isCompositionInstruction(trimmedQuestion) {
+                print("Lexi hotkey branch: compose without selection")
                 if let compositionContext = activeTextContextCapture.capture(),
                    compositionContext.isWritable {
                     requestComposition(instruction: trimmedQuestion, context: compositionContext)
@@ -505,6 +509,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     cursorBuddy.showHint("Click into a text field first", duration: 2.0)
                 }
             } else {
+                print("Lexi hotkey branch: answer current screen")
                 requestFocusedScreenAnswer(question: trimmedQuestion, fallbackAppName: appName, fallbackWindowTitle: windowTitle)
             }
         case .accessibilityPermissionMissing:
@@ -620,10 +625,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         //   answer arrives (no streaming). Streaming a replacement token-by-token
         //   into editors like Google Docs duplicates/drops text, fragments undo,
         //   and races the clipboard restore.
-        // - No selection       → insert new text at the caret, streamed live so the
-        //   user sees it appear as it is generated.
+        // - No selection       → insert new text at the caret in one verified shot;
+        //   this is more reliable than token-by-token clipboard pasting.
         let replaceMode = context.hasSelection
         let inserter = StreamingTextInserter()
+        print("Lexi composition start: app='\(context.appName)' window='\(context.windowTitle)' selectionLength=\(context.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).count) replaceMode=\(replaceMode) currentTextLength=\(context.currentText.count) writable=\(context.isWritable)")
         if replaceMode {
             cursorBuddy.showHint("Rewriting selection in \(context.appName)…", duration: 2.0)
         } else {
@@ -644,8 +650,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     onDelta: { [weak self] delta, _ in
                         guard let self else { return }
                         self.cursorBuddy.setActivity(.streaming)
-                        if !replaceMode {
-                            inserter.insert(delta)
+                        if replaceMode {
+                            print("Lexi composition streaming delta (replaceMode): \(delta.count) chars")
                         }
                     },
                     onTiming: { timing in
@@ -664,8 +670,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 if replaceMode {
                     let replacement = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    print("Lexi composition finish: replaceMode replacementCount=\(replacement.count)")
                     let didReplace = !replacement.isEmpty
                         && (await inserter.replaceSelection(with: replacement, allowKeyboardFallback: true))
+                    print("Lexi composition result: replaceMode didReplace=\(didReplace)")
                     await MainActor.run {
                         if didReplace {
                             self.recordComposition(instruction: instruction, answer: answer, context: context)
@@ -680,12 +688,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
+                let insertion = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                print("Lexi composition finish: insertMode insertionCount=\(insertion.count)")
+                let didInsert = await inserter.insertFinal(insertion, allowKeyboardFallback: true)
+                print("Lexi composition result: insertMode didInsert=\(didInsert)")
                 await MainActor.run {
-                    inserter.finish()
-                    self.recordComposition(instruction: instruction, answer: answer, context: context)
-                    self.cursorBuddy.setActivity(.idle)
-                    self.cursorBuddy.showHint("Inserted draft", duration: 1.5)
-                    self.rebuildMenu()
+                    if didInsert {
+                        self.recordComposition(instruction: instruction, answer: answer, context: context)
+                        self.cursorBuddy.setActivity(.idle)
+                        self.cursorBuddy.showHint("Inserted draft", duration: 1.5)
+                        self.rebuildMenu()
+                    } else {
+                        inserter.cancel()
+                        self.cursorBuddy.pulse(.error)
+                        self.cursorBuddy.showHint("Couldn’t compose there", duration: 2.0)
+                        print("Lexi composition failed: insertion verification did not confirm a change")
+                    }
                 }
             } catch {
                 guard !Task.isCancelled else { return }

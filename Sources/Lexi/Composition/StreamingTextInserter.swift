@@ -38,25 +38,34 @@ final class StreamingTextInserter {
     }
 
     func replaceSelection(with text: String, allowKeyboardFallback: Bool) async -> Bool {
-        if insertViaAccessibility(text, requireSelection: true) {
+        if !isActive {
+            begin()
+        }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            synthesizeDelete()
+            restoreClipboardAfterPasteSettles()
             return true
         }
-        guard allowKeyboardFallback else { return false }
-        let restoreSnapshot = text.isEmpty ? nil : StreamingPasteboardSnapshot(pasteboard: .general)
-        if text.isEmpty {
-            synthesizeDelete()
+        let didInsert = await performInsertion(text, requireSelection: true, allowKeyboardFallback: allowKeyboardFallback)
+        if didInsert {
+            restoreClipboardAfterPasteSettles()
         } else {
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.setString(text, forType: .string)
-            try? await Task.sleep(nanoseconds: 45_000_000)
-            synthesizePaste()
+            cancel()
         }
-        if let restoreSnapshot {
-            try? await Task.sleep(nanoseconds: 650_000_000)
-            restoreSnapshot.restore(to: .general)
+        return didInsert
+    }
+
+    func insertFinal(_ text: String, allowKeyboardFallback: Bool) async -> Bool {
+        if !isActive {
+            begin()
         }
-        return true
+        let didInsert = await performInsertion(text, requireSelection: false, allowKeyboardFallback: allowKeyboardFallback)
+        if didInsert {
+            restoreClipboardAfterPasteSettles()
+        } else {
+            cancel()
+        }
+        return didInsert
     }
 
     private func startPumpIfNeeded() {
@@ -81,7 +90,7 @@ final class StreamingTextInserter {
     }
 
     private func paste(_ text: String) async {
-        if insertViaAccessibility(text, requireSelection: false) {
+        if await insertViaAccessibility(text, requireSelection: false) {
             return
         }
         let pasteboard = NSPasteboard.general
@@ -103,46 +112,102 @@ final class StreamingTextInserter {
         }
     }
 
-    private func insertViaAccessibility(_ text: String, requireSelection: Bool) -> Bool {
-        guard let element = focusedTextElement(), !isPasswordField(element) else {
+    private func performInsertion(_ text: String, requireSelection: Bool, allowKeyboardFallback: Bool) async -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
             return false
         }
+        let preflightElement = focusedTextElement()
+        let preflightValue = preflightElement.flatMap {
+            stringAttribute(kAXValueAttribute, from: $0) ?? stringAttribute(kAXSelectedTextAttribute, from: $0)
+        }
+        if await insertViaAccessibility(trimmed, requireSelection: requireSelection) {
+            return true
+        }
+        guard allowKeyboardFallback else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(trimmed, forType: .string)
+        try? await Task.sleep(nanoseconds: 45_000_000)
+        synthesizePaste()
+        let verified = await verifyInsertion(text: trimmed, element: preflightElement, beforeValue: preflightValue)
+        print("Lexi composition clipboard fallback: verified=\(verified)")
+        return verified
+    }
+
+    private func insertViaAccessibility(_ text: String, requireSelection: Bool) async -> Bool {
+        guard let element = focusedTextElement(), !isPasswordField(element) else {
+            print("Lexi composition accessibility insert: no focused writable element")
+            return false
+        }
+        let role = stringAttribute(kAXRoleAttribute, from: element) ?? "unknown"
+        let subrole = stringAttribute(kAXSubroleAttribute, from: element) ?? "unknown"
+        let appName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown"
         let selectedRange = cfRangeAttribute(kAXSelectedTextRangeAttribute, from: element)
+        let beforeValue = stringAttribute(kAXValueAttribute, from: element) ?? ""
         if requireSelection, !(selectedRange?.length ?? 0 > 0) {
-            // Caller demands a real selection to replace; bail to the paste fallback
-            // rather than silently appending at the caret.
+            print("Lexi composition accessibility insert rejected: app='\(appName)' role='\(role)' subrole='\(subrole)' requireSelection=true selectionLength=0")
             return false
         }
 
-        // Primary path: setting kAXSelectedTextAttribute is the canonical "replace the
-        // current selection (or insert at the caret) with this string" operation. It
-        // preserves the rest of the document and rich-text attributes, and works on
-        // fields whose full kAXValue is read-only or truncated.
         if isAttributeSettable(kAXSelectedTextAttribute, element) {
-            if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success {
-                return true
+            let error = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+            if error == .success {
+                let verified = await verifyInsertion(text: text, element: element, beforeValue: beforeValue)
+                print("Lexi composition accessibility insert: path=selectedTextAttr app='\(appName)' role='\(role)' subrole='\(subrole)' verified=\(verified)")
+                if verified {
+                    return true
+                }
+            } else {
+                print("Lexi composition accessibility insert failed: path=selectedTextAttr app='\(appName)' role='\(role)' subrole='\(subrole)' error=\(error.rawValue)")
             }
         }
 
-        // Secondary path: rewrite the whole value around the selected range. Only safe
-        // for plain-text fields whose entire value is settable and readable.
-        guard isAttributeSettable(kAXValueAttribute, element) else { return false }
-        let currentValue = stringAttribute(kAXValueAttribute, from: element) ?? ""
+        guard isAttributeSettable(kAXValueAttribute, element) else {
+            print("Lexi composition accessibility insert unavailable: app='\(appName)' role='\(role)' subrole='\(subrole)' valueNotSettable=true")
+            return false
+        }
+        let currentValue = beforeValue
         let effectiveRange = selectedRange ?? CFRange(location: currentValue.utf16.count, length: 0)
         guard effectiveRange.location >= 0,
               effectiveRange.length >= 0,
-              effectiveRange.location + effectiveRange.length <= currentValue.utf16.count else { return false }
+              effectiveRange.location + effectiveRange.length <= currentValue.utf16.count else {
+            print("Lexi composition accessibility insert rejected: app='\(appName)' role='\(role)' subrole='\(subrole)' invalidRange=\(effectiveRange.location):\(effectiveRange.length)")
+            return false
+        }
         let nsRange = NSRange(location: effectiveRange.location, length: effectiveRange.length)
-        guard let stringRange = Range(nsRange, in: currentValue) else { return false }
+        guard let stringRange = Range(nsRange, in: currentValue) else {
+            print("Lexi composition accessibility insert rejected: app='\(appName)' role='\(role)' subrole='\(subrole)' rangeConversionFailed")
+            return false
+        }
         let updatedValue = currentValue.replacingCharacters(in: stringRange, with: text)
-        guard AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, updatedValue as CFTypeRef) == .success else {
+        let error = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, updatedValue as CFTypeRef)
+        guard error == .success else {
+            print("Lexi composition accessibility insert failed: path=valueAttr app='\(appName)' role='\(role)' subrole='\(subrole)' error=\(error.rawValue)")
             return false
         }
         var newRange = CFRange(location: effectiveRange.location + text.utf16.count, length: 0)
         if let rangeValue = AXValueCreate(.cfRange, &newRange) {
             AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeValue)
         }
-        return true
+        let verified = await verifyInsertion(text: text, element: element, beforeValue: beforeValue)
+        print("Lexi composition accessibility insert: path=valueAttr app='\(appName)' role='\(role)' subrole='\(subrole)' verified=\(verified)")
+        return verified
+    }
+
+    private func verifyInsertion(text: String, element: AXUIElement? = nil, beforeValue: String? = nil) async -> Bool {
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        let target = element ?? focusedTextElement()
+        guard let target else { return false }
+        let afterValue = stringAttribute(kAXValueAttribute, from: target)
+            ?? stringAttribute(kAXSelectedTextAttribute, from: target)
+            ?? ""
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let changed = beforeValue.map { $0 != afterValue } ?? !afterValue.isEmpty
+        let containsInsertedText = afterValue.contains(trimmedText) || afterValue.contains(text)
+        let verified = changed && containsInsertedText
+        print("Lexi composition verify: beforeCount=\(beforeValue?.count ?? -1) afterCount=\(afterValue.count) contains=\(containsInsertedText) verified=\(verified)")
+        return verified
     }
 
     private func focusedTextElement() -> AXUIElement? {
