@@ -29,18 +29,22 @@ final class ActiveTextContextCapture {
 
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         let windowTitle = focusedWindow(from: appElement).flatMap { stringAttribute(kAXTitleAttribute, from: $0) } ?? ""
+        let trustedHost = isTrustedEditorHost(appName: appName)
         guard let focusedElement = focusedElement() else {
+            print("Lexi composition focus: app='\(appName)' window='\(windowTitle)' no focused element trustedHost=\(trustedHost)")
             return ActiveTextCompositionContext(
                 appName: appName,
                 windowTitle: windowTitle,
                 selectedText: overrideSelectedText ?? "",
                 surroundingText: overrideSurroundingText ?? "",
                 currentText: "",
-                isWritable: isTrustedEditorHost(appName: appName)
+                isWritable: trustedHost
             )
         }
         let writableElement = preferredWritableElement(startingAt: focusedElement)
         let targetElement = writableElement ?? focusedElement
+        let focusedRole = stringAttribute(kAXRoleAttribute, from: focusedElement) ?? "unknown"
+        let focusedSubrole = stringAttribute(kAXSubroleAttribute, from: focusedElement) ?? "unknown"
 
         let selectedRange = cfRangeAttribute(kAXSelectedTextRangeAttribute, from: targetElement)
         let fullValue = stringAttribute(kAXValueAttribute, from: targetElement) ?? ""
@@ -53,12 +57,8 @@ final class ActiveTextContextCapture {
             : surroundingPassage(in: fullValue, selectedRange: selectedRange)
         let currentText = String(fullValue.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxCurrentTextLength))
 
-        let writable = writableElement != nil || isTrustedEditorHost(appName: appName)
-        if !writable {
-            let role = stringAttribute(kAXRoleAttribute, from: focusedElement) ?? "unknown"
-            let subrole = stringAttribute(kAXSubroleAttribute, from: focusedElement) ?? "unknown"
-            print("Lexi composition target rejected: app='\(appName)' window='\(windowTitle)' role='\(role)' subrole='\(subrole)'")
-        }
+        let writable = writableElement != nil || trustedHost
+        print("Lexi composition focus: app='\(appName)' window='\(windowTitle)' role='\(focusedRole)' subrole='\(focusedSubrole)' writableElement=\(writableElement != nil) trustedHost=\(trustedHost) writable=\(writable) selectionLength=\(selectedRange?.length ?? 0)")
 
         return ActiveTextCompositionContext(
             appName: appName,
