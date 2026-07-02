@@ -205,8 +205,11 @@ final class StreamingTextInserter {
         }
         let changed = beforeValue.map { $0 != afterValue } ?? !afterValue.isEmpty
         let containsInsertedText = afterValue.contains(trimmedText) || afterValue.contains(text)
-        let verified = changed && containsInsertedText
-        print("Lexi composition verify: beforeCount=\(beforeValue?.count ?? -1) afterCount=\(afterValue.count) contains=\(containsInsertedText) verified=\(verified)")
+        // On the lenient (clipboard paste) path, treat any change to the field as
+        // success: apps that transform pasted text (autocorrect, markdown, input
+        // masks) can drop the exact substring while the paste still landed.
+        let verified = lenientIfUnreadable ? changed : (changed && containsInsertedText)
+        print("Lexi composition verify: beforeCount=\(beforeValue?.count ?? -1) afterCount=\(afterValue.count) changed=\(changed) contains=\(containsInsertedText) lenient=\(lenientIfUnreadable) verified=\(verified)")
         return verified
     }
 
