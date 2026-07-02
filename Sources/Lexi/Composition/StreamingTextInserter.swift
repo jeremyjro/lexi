@@ -130,7 +130,7 @@ final class StreamingTextInserter {
         pasteboard.setString(trimmed, forType: .string)
         try? await Task.sleep(nanoseconds: 45_000_000)
         synthesizePaste()
-        let verified = await verifyInsertion(text: trimmed, element: preflightElement, beforeValue: preflightValue)
+        let verified = await verifyInsertion(text: trimmed, element: preflightElement, beforeValue: preflightValue, lenientIfUnreadable: true)
         print("Lexi composition clipboard fallback: verified=\(verified)")
         return verified
     }
@@ -195,7 +195,7 @@ final class StreamingTextInserter {
         return verified
     }
 
-    private func verifyInsertion(text: String, element: AXUIElement? = nil, beforeValue: String? = nil) async -> Bool {
+    private func verifyInsertion(text: String, element: AXUIElement? = nil, beforeValue: String? = nil, lenientIfUnreadable: Bool = false) async -> Bool {
         try? await Task.sleep(nanoseconds: 60_000_000)
         let target = element ?? focusedTextElement()
         guard let target else { return false }
@@ -203,6 +203,10 @@ final class StreamingTextInserter {
             ?? stringAttribute(kAXSelectedTextAttribute, from: target)
             ?? ""
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if afterValue.isEmpty {
+            print("Lexi composition verify: beforeCount=\(beforeValue?.count ?? -1) afterCount=0 unreadable=true lenient=\(lenientIfUnreadable) verified=\(lenientIfUnreadable)")
+            return lenientIfUnreadable
+        }
         let changed = beforeValue.map { $0 != afterValue } ?? !afterValue.isEmpty
         let containsInsertedText = afterValue.contains(trimmedText) || afterValue.contains(text)
         let verified = changed && containsInsertedText
