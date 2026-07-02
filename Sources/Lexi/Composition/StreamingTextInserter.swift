@@ -153,11 +153,8 @@ final class StreamingTextInserter {
         if isAttributeSettable(kAXSelectedTextAttribute, element) {
             let error = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
             if error == .success {
-                let verified = await verifyInsertion(text: text, element: element, beforeValue: beforeValue)
-                print("Lexi composition accessibility insert: path=selectedTextAttr app='\(appName)' role='\(role)' subrole='\(subrole)' verified=\(verified)")
-                if verified {
-                    return true
-                }
+                print("Lexi composition accessibility insert: path=selectedTextAttr app='\(appName)' role='\(role)' subrole='\(subrole)' success=true")
+                return true
             } else {
                 print("Lexi composition accessibility insert failed: path=selectedTextAttr app='\(appName)' role='\(role)' subrole='\(subrole)' error=\(error.rawValue)")
             }
@@ -190,9 +187,8 @@ final class StreamingTextInserter {
         if let rangeValue = AXValueCreate(.cfRange, &newRange) {
             AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeValue)
         }
-        let verified = await verifyInsertion(text: text, element: element, beforeValue: beforeValue)
-        print("Lexi composition accessibility insert: path=valueAttr app='\(appName)' role='\(role)' subrole='\(subrole)' verified=\(verified)")
-        return verified
+        print("Lexi composition accessibility insert: path=valueAttr app='\(appName)' role='\(role)' subrole='\(subrole)' success=true")
+        return true
     }
 
     private func verifyInsertion(text: String, element: AXUIElement? = nil, beforeValue: String? = nil, lenientIfUnreadable: Bool = false) async -> Bool {

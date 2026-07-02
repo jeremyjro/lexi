@@ -57,7 +57,7 @@ final class ActiveTextContextCapture {
             : surroundingPassage(in: fullValue, selectedRange: selectedRange)
         let currentText = String(fullValue.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxCurrentTextLength))
 
-        let writable = (focusedElement != nil && !isPasswordField(focusedElement)) || writableElement != nil || trustedHost
+        let writable = writableElement != nil || trustedHost
         print("Lexi composition focus: app='\(appName)' window='\(windowTitle)' role='\(focusedRole)' subrole='\(focusedSubrole)' writableElement=\(writableElement != nil) trustedHost=\(trustedHost) writable=\(writable) selectionLength=\(selectedRange?.length ?? 0)")
 
         return ActiveTextCompositionContext(
